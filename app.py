@@ -607,6 +607,63 @@ def configured_kobo_column_map() -> dict:
     return {}
 
 
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=4)
+def fetch_kobo_schema_map(base_url: str, asset_uid: str, token: str) -> dict:
+    """Build XML-name/path -> analysis-name mappings from Kobo form metadata.
+
+    Kobo submission JSON uses XLSForm XML names while ordinary exports often
+    show question labels. The dashboard mapping is label-aware, so use the
+    asset's survey schema to connect those two representations automatically.
+    """
+    url = f"{base_url.rstrip('/')}/api/v2/assets/{asset_uid}/"
+    headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
+    response = requests.get(url, headers=headers, timeout=KOBO_REQUEST_TIMEOUT_SECONDS)
+    if response.status_code in {401, 403}:
+        raise RuntimeError("Kobo rejected the credentials or this account cannot view the form schema.")
+    response.raise_for_status()
+    survey = response.json().get("content", {}).get("survey", []) or []
+
+    stripped_map = {str(key).strip(): value for key, value in RAW_TO_TRANSFORMED_COLUMNS.items()}
+    normalized_map = {norm_text(key): value for key, value in RAW_TO_TRANSFORMED_COLUMNS.items()}
+    schema_map = {}
+
+    for question in survey:
+        if not isinstance(question, dict):
+            continue
+        name = str(question.get("name", "")).strip()
+        xpath = str(question.get("$xpath", "")).strip().lstrip("/")
+        label = question.get("label", "")
+        if isinstance(label, list):
+            label_candidates = [str(item) for item in label]
+        elif isinstance(label, dict):
+            label_candidates = [str(item) for item in label.values()]
+        else:
+            label_candidates = [str(label)]
+
+        target = None
+        for candidate in label_candidates:
+            target = stripped_map.get(candidate.strip()) or normalized_map.get(norm_text(candidate))
+            if target:
+                break
+        if not target:
+            target = stripped_map.get(name) or normalized_map.get(norm_text(name))
+        if not target and name in ANALYSIS_COLUMN_NAMES:
+            target = name
+        if not target:
+            continue
+
+        if name:
+            schema_map[name] = target
+        if xpath:
+            schema_map[xpath] = target
+            # Some Kobo deployments include a root node in $xpath while the
+            # submissions endpoint omits it. Also retain the path without it.
+            if "/" in xpath:
+                schema_map[xpath.split("/", 1)[1]] = target
+
+    return schema_map
+
+
 @st.cache_data(show_spinner=False, ttl=KOBO_CACHE_TTL_SECONDS, max_entries=4)
 def fetch_kobo_submissions(base_url: str, asset_uid: str, token: str, refresh_nonce: int = 0):
     """Fetch every page from Kobo KPI v2 and return raw records plus metadata."""
@@ -635,9 +692,13 @@ def fetch_kobo_submissions(base_url: str, asset_uid: str, token: str, refresh_no
 
     flattened = [flatten_kobo_record(item) for item in records]
     frame = pd.json_normalize(flattened, sep="/") if flattened else pd.DataFrame()
-    custom_map = configured_kobo_column_map()
-    if custom_map:
-        frame = frame.rename(columns=custom_map)
+    # Automatically map Kobo XML names through the human-readable question
+    # labels in the asset schema. Explicit configuration takes precedence.
+    schema_map = fetch_kobo_schema_map(base_url, asset_uid, token)
+    effective_map = {**schema_map, **configured_kobo_column_map()}
+    applicable_map = {source: target for source, target in effective_map.items() if source in frame.columns}
+    if applicable_map:
+        frame = frame.rename(columns=applicable_map)
 
     # Kobo JSON uses XLSForm XML names, often nested below group paths. If the
     # final path component is already one of our analysis names, use it safely.
@@ -2751,6 +2812,7 @@ with st.sidebar.expander("ℹ Live data & performance", expanded=False):
             st.session_state.kobo_refresh_nonce += 1
             fetch_kobo_submissions.clear()
             load_kobo_dashboard_data.clear()
+            fetch_kobo_schema_map.clear()
         else:
             source_content_fingerprint.clear()
             load_dashboard_data_cached.clear()
