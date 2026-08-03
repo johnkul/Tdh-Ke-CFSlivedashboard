@@ -1887,6 +1887,37 @@ def table_with_total(data: pd.DataFrame, index: List[str], columns: Optional[Lis
     return table
 
 
+def support_table_with_all_choices(data: pd.DataFrame) -> pd.DataFrame:
+    """Show every configured Support offered choice, including zero counts."""
+    expected = list(dict.fromkeys(SUPPORT_COLUMNS.values()))
+    observed_genders = ordered_unique(data.get("gender_clean", pd.Series(dtype=str)), GENDER_ORDER)
+    table = table_with_total(data, ["support_clean"], ["gender_clean"])
+    if table.empty:
+        body = pd.DataFrame(0, index=expected, columns=observed_genders, dtype=int)
+    else:
+        body = table.drop(index="Grand Total", errors="ignore").drop(columns="Total", errors="ignore")
+        body = body.reindex(index=expected, fill_value=0)
+        if observed_genders:
+            body = body.reindex(columns=observed_genders, fill_value=0)
+    body.index.name = "support_clean"
+    body["Total"] = body.sum(axis=1)
+    body.loc["Grand Total"] = body.sum(numeric_only=True)
+    return body
+
+
+def support_chart_with_all_choices(data: pd.DataFrame) -> pd.DataFrame:
+    """Retain configured zero-count choices on the support chart axis."""
+    expected = list(dict.fromkeys(SUPPORT_COLUMNS.values()))
+    observed_genders = ordered_unique(data.get("gender_clean", pd.Series(dtype=str)), GENDER_ORDER)
+    if not observed_genders:
+        return pd.DataFrame({"support_clean": expected, "gender_clean": ["All"] * len(expected), "Count": 0})
+    complete = pd.MultiIndex.from_product(
+        [expected, observed_genders], names=["support_clean", "gender_clean"]
+    ).to_frame(index=False)
+    observed = count_table(data, ["support_clean", "gender_clean"])
+    return complete.merge(observed, on=["support_clean", "gender_clean"], how="left").fillna({"Count": 0})
+
+
 FRIENDLY_COLUMN_NAMES = {
     "settlement_clean": "Camp Name",
     "location_clean": "Specific Camp Location",
@@ -3515,8 +3546,9 @@ elif section == "Protection & Support":
 
     st.divider()
     st.subheader("Support Offered")
-    render_table(table_with_total(support_context, ["support_clean"], ["gender_clean"]), "Support Offered by Gender", "support")
-    schart = count_table(support_context, ["support_clean", "gender_clean"])
+    st.caption("All configured Kobo choices are shown. A zero indicates that no record under the current filters was counted for that choice.")
+    render_table(support_table_with_all_choices(support_context), "Support Offered by Gender", "support")
+    schart = support_chart_with_all_choices(support_context)
     bar_chart(schart, "Count", "support_clean", "gender_clean", "Support offered by gender", horizontal=True, height=420)
 
 elif section == "Referrals":
