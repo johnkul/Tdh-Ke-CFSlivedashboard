@@ -667,6 +667,84 @@ def fetch_kobo_schema_map(base_url: str, asset_uid: str, token: str) -> dict:
     return schema_map
 
 
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=4)
+def fetch_kobo_support_choice_map(base_url: str, asset_uid: str, token: str) -> dict:
+    """Return authoritative XML choice code -> displayed support label mappings."""
+    url = f"{base_url.rstrip('/')}/api/v2/assets/{asset_uid}/"
+    headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
+    response = requests.get(url, headers=headers, timeout=KOBO_REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    content = response.json().get("content", {}) or {}
+    survey = content.get("survey", []) or []
+    choices = content.get("choices", []) or []
+
+    stripped_map = {str(key).strip(): value for key, value in RAW_TO_TRANSFORMED_COLUMNS.items()}
+    normalized_map = {norm_text(key): value for key, value in RAW_TO_TRANSFORMED_COLUMNS.items()}
+    support_lists = set()
+
+    def label_values(label) -> List[str]:
+        if isinstance(label, list):
+            return [str(item) for item in label]
+        if isinstance(label, dict):
+            return [str(item) for item in label.values()]
+        return [str(label)]
+
+    for question in survey:
+        if not isinstance(question, dict):
+            continue
+        target = None
+        for label in label_values(question.get("label", "")):
+            target = stripped_map.get(label.strip()) or normalized_map.get(norm_text(label))
+            if target:
+                break
+        if target != "support_offered_text":
+            continue
+        list_name = str(question.get("select_from_list_name", "")).strip()
+        question_type = str(question.get("type", "")).strip()
+        if not list_name:
+            match = re.search(r"select_(?:multiple|one)\s+(.+)$", question_type)
+            if match:
+                list_name = match.group(1).strip()
+        if list_name:
+            support_lists.add(list_name)
+
+    choice_map = {}
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        list_name = str(choice.get("list_name", "")).strip()
+        if support_lists and list_name not in support_lists:
+            continue
+        code = str(choice.get("name", "")).strip()
+        if not code:
+            continue
+        resolved = set()
+        for label in label_values(choice.get("label", "")):
+            resolved.update(extract_support_labels_from_text(label))
+        # The displayed label is authoritative. Use the XML code only as a
+        # fallback for older schemas whose choice label metadata is incomplete.
+        if not resolved:
+            resolved.update(extract_support_labels_from_text(code))
+        if resolved:
+            choice_map[code] = sorted(resolved)
+            choice_map[norm_text(code)] = sorted(resolved)
+    return choice_map
+
+
+def translate_kobo_support_choices(value, choice_map: dict):
+    """Translate a Kobo select_multiple code string into displayed labels."""
+    if pd.isna(value) or not str(value).strip() or not choice_map:
+        return value
+    raw = str(value).strip()
+    codes = [item for item in re.split(r"[\s;,|]+", raw) if item]
+    labels = []
+    for code in codes:
+        matches = choice_map.get(code) or choice_map.get(norm_text(code))
+        if matches:
+            labels.extend(matches)
+    return "; ".join(dict.fromkeys(labels)) if labels else value
+
+
 @st.cache_data(show_spinner=False, ttl=KOBO_CACHE_TTL_SECONDS, max_entries=4)
 def fetch_kobo_submissions(base_url: str, asset_uid: str, token: str, refresh_nonce: int = 0):
     """Fetch every page from Kobo KPI v2 and return raw records plus metadata."""
@@ -702,6 +780,15 @@ def fetch_kobo_submissions(base_url: str, asset_uid: str, token: str, refresh_no
     applicable_map = {source: target for source, target in effective_map.items() if source in frame.columns}
     if applicable_map:
         frame = frame.rename(columns=applicable_map)
+
+    # Resolve support select choices from the deployed Kobo choice list. This
+    # is intentionally performed after field-name mapping so the source remains
+    # a select_multiple field—not a guessed free-text classification.
+    if "support_offered_text" in frame.columns:
+        support_choice_map = fetch_kobo_support_choice_map(base_url, asset_uid, token)
+        frame["support_offered_text"] = frame["support_offered_text"].map(
+            lambda value: translate_kobo_support_choices(value, support_choice_map)
+        )
 
     # Kobo JSON uses XLSForm XML names, often nested below group paths. If the
     # final path component is already one of our analysis names, use it safely.
@@ -2868,6 +2955,7 @@ with st.sidebar.expander("ℹ Live data & performance", expanded=False):
             fetch_kobo_submissions.clear()
             load_kobo_dashboard_data.clear()
             fetch_kobo_schema_map.clear()
+            fetch_kobo_support_choice_map.clear()
         else:
             source_content_fingerprint.clear()
             load_dashboard_data_cached.clear()
