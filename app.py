@@ -1341,6 +1341,13 @@ def extract_issue_labels_from_text(value) -> Set[str]:
 
 SUPPORT_TEXT_ALIASES = {
     "psychological first aid": "Psychological First Aid",
+    "psychological firstaid": "Psychological First Aid",
+    "psychological aid": "Psychological First Aid",
+    "psychosocial first aid": "Psychological First Aid",
+    "psycological first aid": "Psychological First Aid",
+    "psychlogical first aid": "Psychological First Aid",
+    "phychological first aid": "Psychological First Aid",
+    "first aid": "Psychological First Aid",
     "pfa": "Psychological First Aid",
     "play and art therapy": "Play and art therapy",
     "play art therapy": "Play and art therapy",
@@ -1356,6 +1363,14 @@ def extract_support_labels_from_text(value) -> Set[str]:
     key_full = norm_text(value)
     if not key_full:
         return labels
+    # Kobo select_multiple responses use XML choice codes and may combine them
+    # in one space-separated string. Recognise both human labels and resilient
+    # code/abbreviation patterns before processing individual display values.
+    if re.search(r"\bpfa\b", key_full) or (
+        "first aid" in key_full
+        and any(token in key_full for token in ["psych", "psyc", "phych", "psychosocial"])
+    ):
+        labels.add("Psychological First Aid")
     for alias, label in SUPPORT_TEXT_ALIASES.items():
         if alias in key_full:
             labels.add(label)
@@ -3482,6 +3497,34 @@ elif section == "Data Quality":
             st.warning(
                 f"{int(unresolved_gender['Records'].sum()):,} gender responses remain unmapped. "
                 "Use the raw values in this table to extend clean_gender() without guessing."
+            )
+
+    st.markdown("#### Support Classification Audit")
+    st.caption("This reconciles Kobo's raw Support offered response/code with the support categories used in tables and charts.")
+    if "support_offered_text" in filtered.columns:
+        support_audit_source = filtered[["support_offered_text", "support_combined"]].copy()
+        support_audit_source["Kobo raw support response"] = support_audit_source["support_offered_text"].fillna("<blank>").astype(str)
+        support_audit_source["Dashboard support categories"] = support_audit_source["support_combined"].fillna(MISSING).astype(str)
+        support_audit = (
+            support_audit_source.groupby(["Kobo raw support response", "Dashboard support categories"], observed=True)
+            .size()
+            .reset_index(name="Records")
+            .sort_values("Records", ascending=False)
+        )
+        render_table(
+            support_audit.set_index(["Kobo raw support response", "Dashboard support categories"]),
+            "Raw Kobo Support Responses → Dashboard Categories",
+            "support_classification_audit",
+        )
+        suspected_pfa = support_audit[
+            support_audit["Kobo raw support response"].map(norm_text).str.contains(r"\bpfa\b|first aid", regex=True)
+        ]
+        unresolved_pfa = suspected_pfa[
+            ~suspected_pfa["Dashboard support categories"].str.contains("Psychological First Aid", case=False, na=False)
+        ]
+        if not unresolved_pfa.empty:
+            st.error(
+                f"{int(unresolved_pfa['Records'].sum()):,} response(s) appear to contain PFA/First Aid but are not classified as Psychological First Aid."
             )
 
     q1, q2, q3, q4 = st.columns(4)
