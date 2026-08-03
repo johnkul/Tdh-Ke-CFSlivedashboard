@@ -51,6 +51,7 @@ LOGO_PATH = BASE_DIR / "assets" / "tdh-logo.png"
 DEVELOPER_LOGO_PATH = BASE_DIR / "assets" / "developer-logo.png"
 CSS_PATH = BASE_DIR / "assets" / "styles.css"
 APP_VERSION = "Version 1.1 · Kobo live data · August 2026"
+SCHEMA_CONTRACT_VERSION = "cfs-schema-2026.08"
 # Keep prepared data hot for normal navigation. Administrators can bypass this
 # window at any time with “Fetch latest Kobo data”.
 KOBO_CACHE_TTL_SECONDS = 1800
@@ -1261,6 +1262,26 @@ def harmonize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
         elif target and target not in out.columns and col != target:
             out = out.rename(columns={col: target})
 
+    # Enforce one deterministic column per analysis name. A newly introduced
+    # Kobo attribute can therefore never shift fields by position or create
+    # ambiguous duplicate targets. Earlier populated sources take precedence;
+    # later duplicates only fill blanks.
+    if out.columns.duplicated().any():
+        coalesced = {}
+        for position, column in enumerate(out.columns):
+            source = out.iloc[:, position]
+            if column not in coalesced:
+                coalesced[column] = source.copy()
+            else:
+                mask = missing_mask(coalesced[column])
+                coalesced[column] = coalesced[column].where(~mask, source)
+        out = pd.DataFrame(coalesced, index=out.index)
+
+    out.attrs["schema_contract_version"] = SCHEMA_CONTRACT_VERSION
+    out.attrs["unmapped_source_columns"] = sorted(
+        str(column) for column in out.columns if str(column) not in ANALYSIS_COLUMN_NAMES
+    )
+
     return out
 
 
@@ -1355,6 +1376,7 @@ def disability_type_source(row: pd.Series):
 
 def prepare_data(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     df = harmonize_input_columns(raw_df)
+    schema_extras = list(df.attrs.get("unmapped_source_columns", []))
     df.insert(0, "record_id", range(1, len(df) + 1))
 
     expected_defaults = {
@@ -1520,6 +1542,8 @@ def prepare_data(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.D
     df["support_combined"] = df["support_combined"].fillna(MISSING)
     df["games_combined"] = df["games_combined"].fillna(MISSING)
 
+    df.attrs["schema_contract_version"] = SCHEMA_CONTRACT_VERSION
+    df.attrs["unmapped_source_columns"] = schema_extras
     return df, issue_long, support_long, game_long
 
 
@@ -2218,22 +2242,15 @@ SECTION_META = {
 
 SECTION_OPTIONS = ["Overview", "Monthly Trends", "CPVs KPIs", "Demographics", "Games & Activities", "Protection & Support", "Referrals", "Data Quality", "Raw Data"]
 SECTION_CATEGORY = {
-    "Overview": "Summary", "Monthly Trends": "Summary",
-    "Demographics": "People & Services", "CPVs KPIs": "People & Services", "Games & Activities": "People & Services",
-    "Protection & Support": "Protection Pathway", "Referrals": "Protection Pathway",
-    "Data Quality": "Data Management", "Raw Data": "Data Management",
-}
-SECTION_GROUPS = {
-    "Summary": ["Overview", "Monthly Trends"],
-    "People & Services": ["Demographics", "CPVs KPIs", "Games & Activities"],
-    "Protection Pathway": ["Protection & Support", "Referrals"],
-    "Data Management": ["Data Quality", "Raw Data"],
-}
-CATEGORY_LABELS = {
-    "Summary": "📊 Summary",
-    "People & Services": "👥 People & Services",
-    "Protection Pathway": "🛡️ Protection Pathway",
-    "Data Management": "✅ Data Management",
+    "Overview": "Executive summary",
+    "Monthly Trends": "Time and trends",
+    "CPVs KPIs": "Workforce performance",
+    "Demographics": "Child profile",
+    "Games & Activities": "Participation and activities",
+    "Protection & Support": "Protection needs and response",
+    "Referrals": "Referral pathway",
+    "Data Quality": "Data governance",
+    "Raw Data": "Record review and export",
 }
 
 
@@ -2246,36 +2263,18 @@ def nav_menu(options: List[str], key: str = "dashboard_section") -> str:
     if key not in st.session_state or st.session_state[key] not in options:
         st.session_state[key] = options[0]
 
-    category_key = f"{key}_category"
-    current_category = SECTION_CATEGORY[st.session_state[key]]
-    if category_key not in st.session_state or st.session_state[category_key] not in SECTION_GROUPS:
-        st.session_state[category_key] = current_category
-
-    category = st.selectbox(
-        "**Analysis area**",
-        list(SECTION_GROUPS),
-        key=category_key,
-        format_func=lambda value: CATEGORY_LABELS[value],
-        help="Start with a broad area, then choose the specific view you need.",
-    )
-    views = SECTION_GROUPS[category]
-    if st.session_state[key] not in views:
-        st.session_state[key] = views[0]
-
-    return st.radio(
-        "View",
-        views,
-        index=views.index(st.session_state[key]),
-        horizontal=False,
+    return st.selectbox(
+        "**Dashboard section**",
+        options,
+        index=options.index(st.session_state[key]),
         key=key,
         format_func=section_label,
-        help="Changing views keeps all active filters in place.",
+        help="Choose the analysis you need. Active filters remain in place.",
     )
 
 
 def go_to_overview() -> None:
     """Navigation callback executed before Streamlit recreates the widgets."""
-    st.session_state["dashboard_section_category"] = "Summary"
     st.session_state["dashboard_section"] = "Overview"
 
 
@@ -2894,23 +2893,32 @@ if not valid_dates.empty:
 else:
     date_label = "All available dates"
 
-st.sidebar.markdown("<div class='filter-group-title'>📍 Location Path</div>", unsafe_allow_html=True)
-selected_camp = multiselect_filter("🏕 Camp Name", filtered, "settlement_clean")
-filtered = filter_if_selected(filtered, "settlement_clean", selected_camp)
-selected_location = multiselect_filter("📌 Specific camp location", filtered, "location_clean")
-filtered = filter_if_selected(filtered, "location_clean", selected_location)
-selected_cfs = multiselect_filter("🏛 CFS / site", filtered, "cfs_clean")
-filtered = filter_if_selected(filtered, "cfs_clean", selected_cfs)
+with st.sidebar.expander("📍 Location filters", expanded=True):
+    st.caption("Select from broad location to specific CFS; choices cascade automatically.")
+    selected_camp = multiselect_filter("🏕 Camp", filtered, "settlement_clean")
+    filtered = filter_if_selected(filtered, "settlement_clean", selected_camp)
+    selected_location = multiselect_filter("📌 Specific location", filtered, "location_clean")
+    filtered = filter_if_selected(filtered, "location_clean", selected_location)
+    selected_cfs = multiselect_filter("🏛 CFS / site", filtered, "cfs_clean")
+    filtered = filter_if_selected(filtered, "cfs_clean", selected_cfs)
 
-st.sidebar.markdown("<div class='filter-group-title'>👥 People & Profile</div>", unsafe_allow_html=True)
-selected_staff = multiselect_filter("👤 Staff / CPV", filtered, "staff_clean")
-filtered = filter_if_selected(filtered, "staff_clean", selected_staff)
-selected_gender = multiselect_filter("⚧ Gender", filtered, "gender_clean", GENDER_ORDER)
-filtered = filter_if_selected(filtered, "gender_clean", selected_gender)
-selected_age = multiselect_filter("🎂 Age group", filtered.assign(age_group=filtered["age_group"].astype(str)), "age_group", AGE_GROUP_ORDER)
-filtered = filter_if_selected(filtered.assign(age_group=filtered["age_group"].astype(str)), "age_group", selected_age)
-selected_disability = multiselect_filter("♿ Living with disability", filtered.assign(disability_status_clean=filtered["disability_status_clean"].astype(str)), "disability_status_clean", YES_NO_ORDER)
-filtered = filter_if_selected(filtered.assign(disability_status_clean=filtered["disability_status_clean"].astype(str)), "disability_status_clean", selected_disability)
+with st.sidebar.expander("👥 Child and service profile", expanded=False):
+    st.caption("Narrow the records by staff and child characteristics.")
+    selected_staff = multiselect_filter("👤 Staff / CPV", filtered, "staff_clean")
+    filtered = filter_if_selected(filtered, "staff_clean", selected_staff)
+    selected_gender = multiselect_filter("⚧ Gender", filtered, "gender_clean", GENDER_ORDER)
+    filtered = filter_if_selected(filtered, "gender_clean", selected_gender)
+    selected_age = multiselect_filter("🎂 Age group", filtered.assign(age_group=filtered["age_group"].astype(str)), "age_group", AGE_GROUP_ORDER)
+    filtered = filter_if_selected(filtered.assign(age_group=filtered["age_group"].astype(str)), "age_group", selected_age)
+    selected_disability = multiselect_filter("♿ Living with disability", filtered.assign(disability_status_clean=filtered["disability_status_clean"].astype(str)), "disability_status_clean", YES_NO_ORDER)
+    filtered = filter_if_selected(filtered.assign(disability_status_clean=filtered["disability_status_clean"].astype(str)), "disability_status_clean", selected_disability)
+
+with st.sidebar.expander("🎯 Visit and service outcomes", expanded=False):
+    st.caption("Focus the dashboard on visit status or referrals.")
+    selected_first_visit = multiselect_filter("🔄 First visit", filtered.assign(first_visit_clean=filtered["first_visit_clean"].astype(str)), "first_visit_clean", YES_NO_ORDER)
+    filtered = filter_if_selected(filtered.assign(first_visit_clean=filtered["first_visit_clean"].astype(str)), "first_visit_clean", selected_first_visit)
+    selected_referral = multiselect_filter("🔁 Referral made", filtered.assign(referral_made_clean=filtered["referral_made_clean"].astype(str)), "referral_made_clean", YES_NO_ORDER)
+    filtered = filter_if_selected(filtered.assign(referral_made_clean=filtered["referral_made_clean"].astype(str)), "referral_made_clean", selected_referral)
 # First-visit fields are repaired once during cached data preparation; repeating
 # the row-wise repair on every widget interaction needlessly slows navigation.
 
@@ -2923,13 +2931,19 @@ filter_summary_bits = [
     f"Gender: {', '.join(selected_gender) if selected_gender else 'All genders'}",
     f"Age group: {', '.join(selected_age) if selected_age else 'All age groups'}",
     f"Disability: {', '.join(selected_disability) if selected_disability else 'All disability statuses'}",
+    f"First visit: {', '.join(selected_first_visit) if selected_first_visit else 'All visit statuses'}",
+    f"Referral made: {', '.join(selected_referral) if selected_referral else 'All referral statuses'}",
 ]
 with st.sidebar.expander("Current filter path", expanded=False):
     st.markdown(
         f"<div class='filter-summary'>{'<br>'.join(filter_summary_bits)}</div>",
         unsafe_allow_html=True,
     )
-st.sidebar.markdown(f"<div class='filter-result-card'><span>Filtered records</span><b>{len(filtered):,}</b></div>", unsafe_allow_html=True)
+active_filter_count = sum(bool(values) for values in [selected_camp, selected_location, selected_cfs, selected_staff, selected_gender, selected_age, selected_disability, selected_first_visit, selected_referral])
+st.sidebar.markdown(
+    f"<div class='filter-result-card'><span>{active_filter_count} active filters · records</span><b>{len(filtered):,}</b></div>",
+    unsafe_allow_html=True,
+)
 
 with section_nav_slot:
     st.markdown("<div class='sidebar-title'>Explore Dashboard</div>", unsafe_allow_html=True)
@@ -2939,7 +2953,7 @@ with section_nav_slot:
     st.caption(f"{SECTION_CATEGORY[section]} · {len(filtered):,} filtered records")
     with st.expander("How to use this dashboard", expanded=False):
         st.markdown(
-            "1. Choose an **analysis area** and **view**.\n"
+            "1. Choose a **dashboard section**.\n"
             "2. Apply filters below; selections carry across views.\n"
             "3. Read the section purpose shown above each analysis.\n\n"
             "**CPV:** Community-based protection volunteer  \n"
@@ -2968,7 +2982,8 @@ if date_label != "All available dates":
 for label, values in [
     ("Camp", selected_camp), ("Location", selected_location), ("CFS", selected_cfs),
     ("Staff", selected_staff), ("Gender", selected_gender), ("Age", selected_age),
-    ("Disability", selected_disability),
+    ("Disability", selected_disability), ("First visit", selected_first_visit),
+    ("Referral", selected_referral),
 ]:
     if values:
         display_values = ", ".join(map(str, values[:2])) + (f" +{len(values) - 2}" if len(values) > 2 else "")
@@ -3430,6 +3445,20 @@ elif section == "Data Quality":
     st.markdown("#### Analysis Schema Readiness")
     st.caption("This checks whether the transformed analysis-column structure required by the dashboard is present after raw-to-analysis column harmonisation.")
     render_table(schema_readiness_table(df), "Analysis Schema Readiness", "schema_readiness")
+    schema_extras = list(df.attrs.get("unmapped_source_columns", []))
+    st.caption(f"Schema contract: {SCHEMA_CONTRACT_VERSION}")
+    if schema_extras:
+        st.info(
+            f"Kobo contains {len(schema_extras):,} additional/unmapped field(s). They are isolated from existing analytics, "
+            "so they cannot shift contracted dashboard fields. Review and map them only when they should become analytical fields."
+        )
+        render_table(
+            pd.DataFrame({"Additional / unmapped Kobo field": schema_extras}).set_index("Additional / unmapped Kobo field"),
+            "Kobo Schema Additions",
+            "kobo_schema_additions",
+        )
+    else:
+        st.success("No unmapped Kobo fields were detected against the current schema contract.")
 
     st.markdown("#### Gender Classification Audit")
     st.caption("This reconciles the exact Kobo response/code with the category used in every dashboard table and chart.")
