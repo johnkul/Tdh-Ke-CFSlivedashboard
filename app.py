@@ -51,9 +51,9 @@ LOGO_PATH = BASE_DIR / "assets" / "tdh-logo.png"
 DEVELOPER_LOGO_PATH = BASE_DIR / "assets" / "developer-logo.png"
 CSS_PATH = BASE_DIR / "assets" / "styles.css"
 APP_VERSION = "Version 1.1 · Kobo live data · August 2026"
-# Five minutes keeps section navigation fast for multi-user deployments. The
-# administrator can still bypass the cache with “Fetch latest Kobo data”.
-KOBO_CACHE_TTL_SECONDS = 300
+# Keep prepared data hot for normal navigation. Administrators can bypass this
+# window at any time with “Fetch latest Kobo data”.
+KOBO_CACHE_TTL_SECONDS = 1800
 KOBO_REQUEST_TIMEOUT_SECONDS = 45
 PREPARED_DATA_PATH = DATA_DIR / "cfs_dashboard_prepared.pkl"
 PREPARED_CACHE_PATH = BASE_DIR / ".cfs_dashboard_prepared_cache.pkl"
@@ -199,7 +199,7 @@ AGE_GROUP_ORDER = [
     MISSING,
 ]
 YES_NO_ORDER = ["Yes", "No", MISSING]
-GENDER_ORDER = ["Girls", "Boys", "Intersex", "Transgender", MISSING]
+GENDER_ORDER = ["Girls", "Boys", "Intersex", "Transgender", "Intersex / Transgender", "Non-binary", "Other / self-described", MISSING]
 TOP_N_OPTIONS = [5, 10, 15, 25]
 CHART_COLORS = ["#1d4ed8", "#16a34a", "#f97316", "#dc2626", "#7c3aed", "#0891b2", "#be123c", "#4338ca"]
 
@@ -718,8 +718,14 @@ def fetch_kobo_submissions(base_url: str, asset_uid: str, token: str, refresh_no
     return frame, fetched_at, page_count
 
 
-@st.cache_data(show_spinner=False, ttl=KOBO_CACHE_TTL_SECONDS, max_entries=4)
+@st.cache_resource(show_spinner=False, ttl=KOBO_CACHE_TTL_SECONDS, max_entries=4)
 def load_kobo_dashboard_data(base_url: str, asset_uid: str, token: str, refresh_nonce: int = 0):
+    """Return one shared in-memory prepared dataset for all dashboard sessions.
+
+    cache_resource avoids serializing and copying several DataFrames on every
+    section/filter rerun, which is substantially faster for 17k+ submissions.
+    The dashboard treats the returned frames as read-only.
+    """
     raw_df, fetched_at, page_count = fetch_kobo_submissions(base_url, asset_uid, token, refresh_nonce)
     raw_count = int(len(raw_df))
     df, issue_long, support_long, game_long = prepare_data(raw_df)
@@ -938,14 +944,27 @@ def clean_gender(value) -> str:
     key = norm_text(value)
     if not key:
         return MISSING
-    if key in {"girl", "girls", "female", "f"}:
-        return "Girls"
-    if key in {"boy", "boys", "male", "m"}:
-        return "Boys"
-    if key in {"intersex", "inter sex", "intersexual", "intersexual child", "i"}:
+    # Kobo JSON returns XLSForm choice *names*, not always their displayed
+    # labels. Substring checks therefore cover codes such as intersex_child,
+    # child_transgender and gender_non_binary after norm_text normalisation.
+    contains_intersex = "intersex" in key or "inter sex" in key or "intersexual" in key
+    contains_transgender = "transgender" in key or "trans gender" in key
+    if contains_intersex and contains_transgender:
+        # Preserve a combined form choice; do not arbitrarily split one response
+        # into two identities or force it into only one category.
+        return "Intersex / Transgender"
+    if contains_intersex:
         return "Intersex"
-    if key in {"transgender", "trans gender", "trans", "tg", "other", "others", "trans boy", "trans girl", "trans male", "trans female"}:
+    if contains_transgender or key in {"trans", "tg"}:
         return "Transgender"
+    if "non binary" in key or "nonbinary" in key or key in {"nb", "genderqueer"}:
+        return "Non-binary"
+    if key in {"girl", "girls", "female", "f", "girl child", "female child"} or key.startswith("girl "):
+        return "Girls"
+    if key in {"boy", "boys", "male", "m", "boy child", "male child"} or key.startswith("boy "):
+        return "Boys"
+    if key in {"other", "others", "other specify", "prefer to self describe", "self described"}:
+        return "Other / self-described"
     return MISSING
 
 
@@ -2757,8 +2776,10 @@ if "kobo_refresh_nonce" not in st.session_state:
     st.session_state.kobo_refresh_nonce = 0
 
 load_started_at = time.perf_counter()
+startup_status = st.status("Loading prepared dashboard data…", expanded=False)
 try:
     if kobo_configured():
+        startup_status.update(label="Connecting to Kobo and loading cached submissions…", state="running")
         kobo_base_url = str(setting("KOBO_BASE_URL", "https://kf.kobotoolbox.org"))
         kobo_asset_uid = str(setting("KOBO_ASSET_UID"))
         kobo_token = str(setting("KOBO_TOKEN"))
@@ -2769,6 +2790,7 @@ try:
         source_modified = fetched_dt.strftime("%d %b %Y %H:%M EAT")
         source_label = f"Kobo asset {kobo_asset_uid}"
     elif data_path.exists():
+        startup_status.update(label="Loading cached local dashboard data…", state="running")
         source_stat = data_path.stat()
         modified_time = source_stat.st_mtime
         source_label = f"Source file: {data_path}"
@@ -2780,14 +2802,17 @@ try:
         st.info("Add KOBO_TOKEN and KOBO_ASSET_UID to .streamlit/secrets.toml. See README_KOBO.md.")
         st.stop()
 except requests.RequestException as exc:
+    startup_status.update(label="Kobo connection failed", state="error")
     st.error(f"Kobo could not be reached: {exc}")
     st.info("The app did not expose your token. Check connectivity, Kobo server URL, and project permissions.")
     st.stop()
 except Exception as exc:
+    startup_status.update(label="Dashboard preparation failed", state="error")
     st.error(f"The dashboard data could not be loaded/prepared: {exc}")
     st.stop()
 
 load_elapsed_seconds = time.perf_counter() - load_started_at
+startup_status.update(label=f"Dashboard data ready in {load_elapsed_seconds:.1f} seconds", state="complete")
 
 # Enforce the approved age taxonomy after every load, including loads served
 # from a prepared pickle or Streamlit's persisted cache. This prevents legacy
@@ -3021,10 +3046,16 @@ with overview_col:
         st.button("← Overview", key="back_to_overview", use_container_width=True, on_click=go_to_overview)
 section_intro_card(section)
 
-section_narrative = build_table_driven_narrative(section, filtered, issue_context, support_context, game_context)
 with st.expander("Findings from the current tables", expanded=(section == "Overview")):
     st.caption("Automatically generated, filter-aware descriptive findings. They summarize observed patterns and do not establish causes.")
-    st.markdown(section_narrative)
+    if section == "Overview":
+        section_narrative = build_table_driven_narrative(section, filtered, issue_context, support_context, game_context)
+        st.markdown(section_narrative)
+    elif st.button("Generate findings", key=f"generate_findings_{section}", use_container_width=False):
+        section_narrative = build_table_driven_narrative(section, filtered, issue_context, support_context, game_context)
+        st.markdown(section_narrative)
+    else:
+        st.caption("Generate this narrative only when needed to keep section navigation fast.")
 
 # -----------------------------------------------------------------------------
 # Sections
@@ -3399,6 +3430,30 @@ elif section == "Data Quality":
     st.markdown("#### Analysis Schema Readiness")
     st.caption("This checks whether the transformed analysis-column structure required by the dashboard is present after raw-to-analysis column harmonisation.")
     render_table(schema_readiness_table(df), "Analysis Schema Readiness", "schema_readiness")
+
+    st.markdown("#### Gender Classification Audit")
+    st.caption("This reconciles the exact Kobo response/code with the category used in every dashboard table and chart.")
+    if "child_gender" in filtered.columns:
+        gender_audit_source = filtered[["child_gender", "gender_clean"]].copy()
+        gender_audit_source["Kobo raw response"] = gender_audit_source["child_gender"].fillna("<blank>").astype(str)
+        gender_audit_source["Dashboard category"] = gender_audit_source["gender_clean"].astype(str)
+        gender_audit = (
+            gender_audit_source.groupby(["Kobo raw response", "Dashboard category"], observed=True)
+            .size()
+            .reset_index(name="Records")
+            .sort_values("Records", ascending=False)
+        )
+        render_table(
+            gender_audit.set_index(["Kobo raw response", "Dashboard category"]),
+            "Raw Kobo Gender Responses → Dashboard Categories",
+            "gender_classification_audit",
+        )
+        unresolved_gender = gender_audit[gender_audit["Dashboard category"].eq(MISSING)]
+        if not unresolved_gender.empty:
+            st.warning(
+                f"{int(unresolved_gender['Records'].sum()):,} gender responses remain unmapped. "
+                "Use the raw values in this table to extend clean_gender() without guessing."
+            )
 
     q1, q2, q3, q4 = st.columns(4)
     with q1:
