@@ -742,7 +742,12 @@ def translate_kobo_support_choices(value, choice_map: dict):
         matches = choice_map.get(code) or choice_map.get(norm_text(code))
         if matches:
             labels.extend(matches)
-    return "; ".join(dict.fromkeys(labels)) if labels else value
+    if not labels:
+        return value
+    # Retain the authoritative stored codes as well as resolved display labels.
+    # This prevents one unresolved choice from being discarded when other
+    # choices in the same select_multiple response translate successfully.
+    return raw + "; " + "; ".join(dict.fromkeys(labels))
 
 
 @st.cache_data(show_spinner=False, ttl=KOBO_CACHE_TTL_SECONDS, max_entries=4)
@@ -1612,6 +1617,16 @@ def prepare_data(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.D
         if text_rows:
             issue_frames.append(pd.DataFrame(text_rows))
     issue_long = pd.concat(issue_frames, ignore_index=True).drop_duplicates() if issue_frames else pd.DataFrame(columns=["record_id", "issue_clean"])
+
+    # Reconstruct the expanded 0/1 support-choice columns from the authoritative
+    # select_multiple response. Kobo JSON does not consistently expose the
+    # Excel export's expanded choice columns, so relying only on those columns
+    # can incorrectly produce zero counts (notably for PFA).
+    parsed_support = df["support_offered_text"].map(extract_support_labels_from_text)
+    for col, label in SUPPORT_COLUMNS.items():
+        existing_selected = df[col].map(is_yes) if col in df.columns else pd.Series(False, index=df.index)
+        selected_from_multi = parsed_support.map(lambda labels: label in labels)
+        df[col] = (existing_selected | selected_from_multi).astype("int8")
 
     support_frames = []
     for col, label in SUPPORT_COLUMNS.items():
