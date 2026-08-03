@@ -51,7 +51,9 @@ LOGO_PATH = BASE_DIR / "assets" / "tdh-logo.png"
 DEVELOPER_LOGO_PATH = BASE_DIR / "assets" / "developer-logo.png"
 CSS_PATH = BASE_DIR / "assets" / "styles.css"
 APP_VERSION = "Version 1.1 · Kobo live data · August 2026"
-KOBO_CACHE_TTL_SECONDS = 60
+# Five minutes keeps section navigation fast for multi-user deployments. The
+# administrator can still bypass the cache with “Fetch latest Kobo data”.
+KOBO_CACHE_TTL_SECONDS = 300
 KOBO_REQUEST_TIMEOUT_SECONDS = 45
 PREPARED_DATA_PATH = DATA_DIR / "cfs_dashboard_prepared.pkl"
 PREPARED_CACHE_PATH = BASE_DIR / ".cfs_dashboard_prepared_cache.pkl"
@@ -197,7 +199,7 @@ AGE_GROUP_ORDER = [
     MISSING,
 ]
 YES_NO_ORDER = ["Yes", "No", MISSING]
-GENDER_ORDER = ["Girls", "Boys", "Transgender", MISSING]
+GENDER_ORDER = ["Girls", "Boys", "Intersex", "Transgender", MISSING]
 TOP_N_OPTIONS = [5, 10, 15, 25]
 CHART_COLORS = ["#1d4ed8", "#16a34a", "#f97316", "#dc2626", "#7c3aed", "#0891b2", "#be123c", "#4338ca"]
 
@@ -940,6 +942,8 @@ def clean_gender(value) -> str:
         return "Girls"
     if key in {"boy", "boys", "male", "m"}:
         return "Boys"
+    if key in {"intersex", "inter sex", "intersexual", "intersexual child", "i"}:
+        return "Intersex"
     if key in {"transgender", "trans gender", "trans", "tg", "other", "others", "trans boy", "trans girl", "trans male", "trans female"}:
         return "Transgender"
     return MISSING
@@ -2716,6 +2720,15 @@ def schema_readiness_table(data: pd.DataFrame) -> pd.DataFrame:
 st.set_page_config(page_title="Tdh Kenya CFS Dashboard", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 load_external_css(CSS_PATH)
 
+# Optional OIDC protection for public/multi-user hosting. Set AUTH_REQUIRED=true
+# and configure Streamlit's [auth] secrets to activate it.
+auth_required = str(setting("AUTH_REQUIRED", "false")).strip().lower() in {"1", "true", "yes", "on"}
+if auth_required and not st.user.is_logged_in:
+    st.title("Tdh Kenya CFS Dashboard")
+    st.info("Sign in with your organisation account to access this dashboard.")
+    st.button("Sign in", type="primary", on_click=st.login)
+    st.stop()
+
 page_header(
     "Tdh Kenya Child Friendly Spaces Dashboard",
     "Professional monitoring dashboard for CFS visits, demographics, protection issues, support, activities, referrals, and data quality.",
@@ -2723,6 +2736,9 @@ page_header(
 
 st.sidebar.markdown("<div class='sidebar-title'>Dashboard Controls</div>", unsafe_allow_html=True)
 st.sidebar.caption(APP_VERSION)
+if auth_required:
+    st.sidebar.caption(f"Signed in: {getattr(st.user, 'email', getattr(st.user, 'name', 'Authenticated user'))}")
+    st.sidebar.button("Sign out", on_click=st.logout, use_container_width=True)
 if st.sidebar.button("↺ Reset view", use_container_width=True, help="Clear active filters and return to the default dashboard view."):
     for state_key in list(st.session_state.keys()):
         if state_key.startswith("filter_") or state_key in {"date_from_filter", "date_to_filter", "dashboard_section", "dashboard_section_category"}:
@@ -2870,7 +2886,8 @@ selected_age = multiselect_filter("🎂 Age group", filtered.assign(age_group=fi
 filtered = filter_if_selected(filtered.assign(age_group=filtered["age_group"].astype(str)), "age_group", selected_age)
 selected_disability = multiselect_filter("♿ Living with disability", filtered.assign(disability_status_clean=filtered["disability_status_clean"].astype(str)), "disability_status_clean", YES_NO_ORDER)
 filtered = filter_if_selected(filtered.assign(disability_status_clean=filtered["disability_status_clean"].astype(str)), "disability_status_clean", selected_disability)
-filtered = repair_first_visit_columns(filtered)
+# First-visit fields are repaired once during cached data preparation; repeating
+# the row-wise repair on every widget interaction needlessly slows navigation.
 
 filter_summary_bits = [
     f"Date selected: {date_label}",
@@ -2906,9 +2923,14 @@ with section_nav_slot:
         )
 
 ctx_cols = ["record_id", "settlement_clean", "location_clean", "cfs_clean", "staff_clean", "gender_clean", "age_group"]
-issue_context = issue_long.merge(filtered[ctx_cols], on="record_id", how="inner") if not filtered.empty else issue_long.iloc[0:0]
-support_context = support_long.merge(filtered[ctx_cols], on="record_id", how="inner") if not filtered.empty else support_long.iloc[0:0]
-game_context = game_long.merge(filtered[ctx_cols], on="record_id", how="inner") if not filtered.empty else game_long.iloc[0:0]
+# Build only the multi-response datasets required by the active section. These
+# merges were previously performed three times on every navigation/filter rerun.
+needs_issues = section in {"Overview", "Protection & Support"}
+needs_support = section in {"Overview", "Protection & Support"}
+needs_games = section in {"Overview", "Games & Activities"}
+issue_context = issue_long.merge(filtered[ctx_cols], on="record_id", how="inner") if needs_issues and not filtered.empty else issue_long.iloc[0:0]
+support_context = support_long.merge(filtered[ctx_cols], on="record_id", how="inner") if needs_support and not filtered.empty else support_long.iloc[0:0]
+game_context = game_long.merge(filtered[ctx_cols], on="record_id", how="inner") if needs_games and not filtered.empty else game_long.iloc[0:0]
 
 st.markdown(
     f"<div class='record-status'>Showing {len(filtered):,} of {len(df):,} records | Date selected: {date_label}</div>",
