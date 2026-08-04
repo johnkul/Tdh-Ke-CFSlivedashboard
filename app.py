@@ -52,6 +52,7 @@ DEVELOPER_LOGO_PATH = BASE_DIR / "assets" / "developer-logo.png"
 CSS_PATH = BASE_DIR / "assets" / "styles.css"
 APP_VERSION = "Version 1.1 · Kobo live data · August 2026"
 SCHEMA_CONTRACT_VERSION = "cfs-schema-2026.08"
+TABLE_RENDER_CACHE_VERSION = "tables-without-index-v2"
 # Keep prepared data hot for normal navigation. Administrators can bypass this
 # window at any time with “Fetch latest Kobo data”.
 KOBO_CACHE_TTL_SECONDS = 1800
@@ -2214,7 +2215,9 @@ def render_table(table: pd.DataFrame, title: str, key: str, precision: int = 0) 
         st.info("No records available for this table.")
         return
 
-    flat, sig, html_doc, height, csv_data = cached_table_assets(table, title, precision)
+    flat, sig, html_doc, height, csv_data = cached_table_assets(
+        table, title, precision, TABLE_RENDER_CACHE_VERSION
+    )
     components.html(html_doc, height=height, scrolling=False)
 
     st.download_button(
@@ -2228,8 +2231,9 @@ def render_table(table: pd.DataFrame, title: str, key: str, precision: int = 0) 
 
 
 @st.cache_data(show_spinner=False, max_entries=128)
-def cached_table_assets(table: pd.DataFrame, title: str, precision: int) -> Tuple[pd.DataFrame, str, str, int, bytes]:
+def cached_table_assets(table: pd.DataFrame, title: str, precision: int, cache_version: str) -> Tuple[pd.DataFrame, str, str, int, bytes]:
     """Reuse table HTML, signature, and CSV bytes across unchanged reruns."""
+    del cache_version  # Cache-key version; bump whenever presentation rules change.
     flat = flatten_table(table, title=title)
     sig = df_signature(flat)
     html_doc, height = build_professional_table_html(table, title=title, precision=precision)
