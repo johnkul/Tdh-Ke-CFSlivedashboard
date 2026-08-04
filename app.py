@@ -451,19 +451,24 @@ ISSUE_KEYWORD_RULES = [
 ]
 
 LOCATION_MAP = {
-    "hagadera camp": "Hagadera",
-    "hagadera": "Hagadera",
-    "ifo 1": "Ifo 1",
-    "ifo one": "Ifo 1",
+    "hagadera camp": "Hagadera Camp",
+    "hagadera": "Hagadera Camp",
+    "hagadera mobile cfs 2": "Hagadera Camp",
+    "dagahaley camp": "Dagahaley Camp",
+    "dagahaley": "Dagahaley Camp",
+    "ifo main": "Ifo Main",
+    "ifo 1": "Ifo Main",
+    "ifo one": "Ifo Main",
     "ifo 2": "Ifo 2",
     "ifo two": "Ifo 2",
-    "dagahaley": "Dagahaley",
+    "dadaab host community": "Dadaab Host Community",
     "kalobeyei reception center": "Kalobeyei Reception Centre",
     "kalobeyei reception centre": "Kalobeyei Reception Centre",
     "kalobeyei village 1": "Kalobeyei Village 1",
     "kalobeyei village 2": "Kalobeyei Village 2",
     "kalobeyei village 3": "Kalobeyei Village 3",
     "kalobeyei host": "Kalobeyei Host Community",
+    "kalobeyei host community": "Kalobeyei Host Community",
 }
 
 CFS_MAP = {
@@ -732,6 +737,69 @@ def fetch_kobo_support_choice_map(base_url: str, asset_uid: str, token: str) -> 
     return choice_map
 
 
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=4)
+def fetch_kobo_location_choice_maps(base_url: str, asset_uid: str, token: str) -> dict:
+    """Map Kobo XML codes to displayed labels for the two location questions."""
+    url = f"{base_url.rstrip('/')}/api/v2/assets/{asset_uid}/"
+    headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
+    response = requests.get(url, headers=headers, timeout=KOBO_REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    content = response.json().get("content", {}) or {}
+    survey = content.get("survey", []) or []
+    choices = content.get("choices", []) or []
+    targets = {"specific_camp_location", "camp_location_alt"}
+
+    stripped_map = {str(key).strip(): value for key, value in RAW_TO_TRANSFORMED_COLUMNS.items()}
+    normalized_map = {norm_text(key): value for key, value in RAW_TO_TRANSFORMED_COLUMNS.items()}
+    list_to_target = {}
+
+    def labels(value) -> List[str]:
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item).strip()]
+        if isinstance(value, dict):
+            return [str(item) for item in value.values() if str(item).strip()]
+        return [str(value)] if str(value).strip() else []
+
+    for question in survey:
+        if not isinstance(question, dict):
+            continue
+        target = None
+        for label in labels(question.get("label", "")):
+            target = stripped_map.get(label.strip()) or normalized_map.get(norm_text(label))
+            if target:
+                break
+        if target not in targets:
+            continue
+        list_name = str(question.get("select_from_list_name", "")).strip()
+        if not list_name:
+            match = re.search(r"select_(?:multiple|one)\s+(.+)$", str(question.get("type", "")).strip())
+            if match:
+                list_name = match.group(1).strip()
+        if list_name:
+            list_to_target[list_name] = target
+
+    result = {target: {} for target in targets}
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        target = list_to_target.get(str(choice.get("list_name", "")).strip())
+        code = str(choice.get("name", "")).strip()
+        displayed_labels = labels(choice.get("label", ""))
+        if not target or not code or not displayed_labels:
+            continue
+        displayed = displayed_labels[0].strip()
+        result[target][code] = displayed
+        result[target][norm_text(code)] = displayed
+    return result
+
+
+def translate_kobo_single_choice(value, choice_map: dict):
+    if pd.isna(value) or not str(value).strip():
+        return value
+    raw = str(value).strip()
+    return choice_map.get(raw) or choice_map.get(norm_text(raw)) or value
+
+
 def translate_kobo_support_choices(value, choice_map: dict):
     """Translate a Kobo select_multiple code string into displayed labels."""
     if pd.isna(value) or not str(value).strip() or not choice_map:
@@ -795,6 +863,13 @@ def fetch_kobo_submissions(base_url: str, asset_uid: str, token: str, refresh_no
         frame["support_offered_text"] = frame["support_offered_text"].map(
             lambda value: translate_kobo_support_choices(value, support_choice_map)
         )
+
+    location_choice_maps = fetch_kobo_location_choice_maps(base_url, asset_uid, token)
+    for target, choice_map in location_choice_maps.items():
+        if target in frame.columns and choice_map:
+            frame[target] = frame[target].map(
+                lambda value, mapping=choice_map: translate_kobo_single_choice(value, mapping)
+            )
 
     # Kobo JSON uses XLSForm XML names, often nested below group paths. If the
     # final path component is already one of our analysis names, use it safely.
@@ -1570,9 +1645,15 @@ def prepare_data(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.D
     df.loc[df["disability_status_clean"].astype(str) != "Yes", "disability_type_display"] = MISSING
 
     df["settlement_clean"] = df["camp_of_information_seeking"].map(smart_title)
-    location_cols = ["camp_location_alt", "specific_camp_location", "exact_registered_location"]
-    location_candidates = df[location_cols].replace(r"^\s*$", pd.NA, regex=True)
-    df["location_raw"] = location_candidates.bfill(axis=1).iloc[:, 0]
+    # The form uses different select-one location questions by settlement:
+    # Dadaab -> specific_camp_location; Kalobeyei -> camp_location_alt.
+    # Select conditionally so a skipped/legacy field can never override the
+    # settlement's authoritative location question.
+    dadaab_candidates = df[["specific_camp_location", "camp_location_alt", "exact_registered_location"]].replace(r"^\s*$", pd.NA, regex=True)
+    kalobeyei_candidates = df[["camp_location_alt", "specific_camp_location", "exact_registered_location"]].replace(r"^\s*$", pd.NA, regex=True)
+    df["location_raw"] = dadaab_candidates.bfill(axis=1).iloc[:, 0]
+    kalobeyei_mask = df["settlement_clean"].map(norm_text).str.contains("kalobeyei", na=False)
+    df.loc[kalobeyei_mask, "location_raw"] = kalobeyei_candidates.loc[kalobeyei_mask].bfill(axis=1).iloc[:, 0]
     location_values = df["location_raw"].drop_duplicates()
     location_map = {value: fuzzy_harmonize(value, LOCATION_LOOKUP, cutoff=0.86) for value in location_values}
     df["location_clean"] = df["location_raw"].map(location_map)
@@ -2992,6 +3073,7 @@ with st.sidebar.expander("ℹ Live data & performance", expanded=False):
             load_kobo_dashboard_data.clear()
             fetch_kobo_schema_map.clear()
             fetch_kobo_support_choice_map.clear()
+            fetch_kobo_location_choice_maps.clear()
         else:
             source_content_fingerprint.clear()
             load_dashboard_data_cached.clear()
