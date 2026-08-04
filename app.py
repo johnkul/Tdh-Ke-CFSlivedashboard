@@ -59,7 +59,7 @@ KOBO_CACHE_TTL_SECONDS = 1800
 KOBO_REQUEST_TIMEOUT_SECONDS = 45
 PREPARED_DATA_PATH = DATA_DIR / "cfs_dashboard_prepared.pkl"
 PREPARED_CACHE_PATH = BASE_DIR / ".cfs_dashboard_prepared_cache.pkl"
-PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v19-camp-location-cfs-taxonomy"
+PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v20-today-date"
 
 RAW_TO_TRANSFORMED_COLUMNS = {
     # System / metadata columns
@@ -1760,7 +1760,20 @@ def prepare_data(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.D
     first_visit_candidates = first_visit_candidate_columns(df)
     df["first_visit_source_raw"] = df.apply(lambda row: combine_first_visit_source(row, first_visit_candidates), axis=1)
 
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    # Use Kobo's `today` value as the dashboard reporting date. Preserve the
+    # manually entered date for audit, and fall back to server submission time
+    # then entered date only where `today` is unavailable.
+    df["entered_date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df["today_date"] = pd.to_datetime(df["today"], errors="coerce").dt.normalize()
+    submission_date = (
+        pd.to_datetime(df["submission_time"], errors="coerce", utc=True)
+        .dt.tz_convert(None)
+        .dt.normalize()
+    )
+    df["date"] = df["today_date"].combine_first(submission_date).combine_first(df["entered_date"])
+    df["date_source"] = pd.Series("Entered date fallback", index=df.index, dtype="string")
+    df.loc[submission_date.notna(), "date_source"] = "Submission time fallback"
+    df.loc[df["today_date"].notna(), "date_source"] = "Kobo today"
     df["month"] = df["date"].dt.to_period("M").astype("string")
     df["consent_clean"] = df["consent"].map(yes_no)
     # Analyse only records where consent was given. Consent = No rows are skipped in the form.
@@ -3183,6 +3196,21 @@ startup_status.update(label=f"Dashboard data ready in {load_elapsed_seconds:.1f}
 # age-band labels from resurfacing in any filter, table, chart, or narrative,
 # even if an older transformed frame is encountered.
 if not df.empty:
+    # Re-enforce the reporting-date contract after every cache load so a
+    # previously prepared dataframe cannot retain the manual-entry date.
+    if "entered_date" not in df.columns:
+        df["entered_date"] = pd.to_datetime(df.get("date"), errors="coerce").dt.normalize()
+    df["today_date"] = pd.to_datetime(df.get("today"), errors="coerce").dt.normalize()
+    cached_submission_date = (
+        pd.to_datetime(df.get("submission_time"), errors="coerce", utc=True)
+        .dt.tz_convert(None)
+        .dt.normalize()
+    )
+    df["date"] = df["today_date"].combine_first(cached_submission_date).combine_first(df["entered_date"])
+    df["month"] = df["date"].dt.to_period("M").astype("string")
+    df["date_source"] = pd.Series("Entered date fallback", index=df.index, dtype="string")
+    df.loc[cached_submission_date.notna(), "date_source"] = "Submission time fallback"
+    df.loc[df["today_date"].notna(), "date_source"] = "Kobo today"
     if "age_clean" in df.columns:
         enforced_age_groups = df["age_clean"].map(age_group)
     elif "child_age" in df.columns:
@@ -3267,7 +3295,7 @@ if not valid_dates.empty:
     min_date, max_date = valid_dates.min().date(), valid_dates.max().date()
     with st.sidebar.expander("📅 Date range", expanded=True):
         st.markdown(
-            f"<div class='filter-meta'><span>Dataset range</span><span>{min_date:%d %b %Y} → {max_date:%d %b %Y}</span></div>",
+            f"<div class='filter-meta'><span>Kobo today range</span><span>{min_date:%d %b %Y} → {max_date:%d %b %Y}</span></div>",
             unsafe_allow_html=True,
         )
         c1, c2 = st.columns(2)
