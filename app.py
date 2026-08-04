@@ -3295,7 +3295,7 @@ if not valid_dates.empty:
     min_date, max_date = valid_dates.min().date(), valid_dates.max().date()
     with st.sidebar.expander("📅 Date range", expanded=True):
         st.markdown(
-            f"<div class='filter-meta'><span>Kobo today range</span><span>{min_date:%d %b %Y} → {max_date:%d %b %Y}</span></div>",
+            f"<div class='filter-meta'><span>Date submission range</span><span>{min_date:%d %b %Y} → {max_date:%d %b %Y}</span></div>",
             unsafe_allow_html=True,
         )
         c1, c2 = st.columns(2)
