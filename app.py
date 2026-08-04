@@ -59,7 +59,7 @@ KOBO_CACHE_TTL_SECONDS = 1800
 KOBO_REQUEST_TIMEOUT_SECONDS = 45
 PREPARED_DATA_PATH = DATA_DIR / "cfs_dashboard_prepared.pkl"
 PREPARED_CACHE_PATH = BASE_DIR / ".cfs_dashboard_prepared_cache.pkl"
-PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v17-location-taxonomy"
+PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v18-location-cfs-taxonomy"
 
 RAW_TO_TRANSFORMED_COLUMNS = {
     # System / metadata columns
@@ -472,10 +472,28 @@ LOCATION_MAP = {
 }
 
 CFS_MAP = {
-    "kalobeyei reception center cfs": "Kalobeyei Reception Centre CFS",
-    "kalobeyei reception centre cfs": "Kalobeyei Reception Centre CFS",
-    "host community": "Host Community CFS",
-    "host community cfs": "Host Community CFS",
+    "hagadera mobile cfs 1": "Hagadera Mobile CFS 1",
+    "hagadera mobile cfs 2": "Hagadera Mobile CFS 2",
+    "hagadera girl screening area": "Hagadera Girl Screening Area",
+    "hagadera girl screening ar": "Hagadera Girl Screening Area",
+    "ifo mobile cfs 1": "Ifo Mobile CFS 1",
+    "dagahaley mobile cfs 1": "Dagahaley Mobile CFS 1",
+    "ifo protection area": "Ifo Protection Area",
+    "ifo safe haven": "Ifo Safe Haven",
+    "hagadera cfs 1": "Hagadera CFS 1",
+    "hagadera cfs 2": "Hagadera CFS 2",
+    "ifo 2 cfs": "Ifo 2 CFS",
+    "kalobeyei reception center cfs": "Kalobeyei Reception Center CFS",
+    "kalobeyei reception centre cfs": "Kalobeyei Reception Center CFS",
+    "kalobeyei reception center": "Kalobeyei Reception Center CFS",
+    "furaha centre 1": "Furaha Centre 1",
+    "furaha centre 2": "Furaha Centre 2",
+    "furaha centre 3": "Furaha Centre 3",
+    "mobile cfs 1": "Mobile CFS 1",
+    "mobile cfs 2": "Mobile CFS 2",
+    "mobile cfs 3": "Mobile CFS 3",
+    "host community": "Host Community",
+    "host community cfs": "Host Community",
     "ifo 2 mobile cfs": "Ifo 2 Mobile CFS",
     "ifo mobile cfs 1": "Ifo Mobile CFS 1",
 }
@@ -793,6 +811,61 @@ def fetch_kobo_location_choice_maps(base_url: str, asset_uid: str, token: str) -
     return result
 
 
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=4)
+def fetch_kobo_cfs_choice_maps(base_url: str, asset_uid: str, token: str) -> dict:
+    """Map Kobo XML codes to displayed labels for both settlement CFS fields."""
+    url = f"{base_url.rstrip('/')}/api/v2/assets/{asset_uid}/"
+    headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
+    response = requests.get(url, headers=headers, timeout=KOBO_REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    content = response.json().get("content", {}) or {}
+    survey = content.get("survey", []) or []
+    choices = content.get("choices", []) or []
+    targets = {"child_friendly_space_visited", "cfs_visited"}
+    stripped_map = {str(key).strip(): value for key, value in RAW_TO_TRANSFORMED_COLUMNS.items()}
+    normalized_map = {norm_text(key): value for key, value in RAW_TO_TRANSFORMED_COLUMNS.items()}
+    list_to_target = {}
+
+    def labels(value) -> List[str]:
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item).strip()]
+        if isinstance(value, dict):
+            return [str(item) for item in value.values() if str(item).strip()]
+        return [str(value)] if str(value).strip() else []
+
+    for question in survey:
+        if not isinstance(question, dict):
+            continue
+        target = None
+        for label in labels(question.get("label", "")):
+            target = stripped_map.get(label.strip()) or normalized_map.get(norm_text(label))
+            if target:
+                break
+        if target not in targets:
+            continue
+        list_name = str(question.get("select_from_list_name", "")).strip()
+        if not list_name:
+            match = re.search(r"select_(?:multiple|one)\s+(.+)$", str(question.get("type", "")).strip())
+            if match:
+                list_name = match.group(1).strip()
+        if list_name:
+            list_to_target[list_name] = target
+
+    result = {target: {} for target in targets}
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        target = list_to_target.get(str(choice.get("list_name", "")).strip())
+        code = str(choice.get("name", "")).strip()
+        displayed_labels = labels(choice.get("label", ""))
+        if not target or not code or not displayed_labels:
+            continue
+        displayed = displayed_labels[0].strip()
+        result[target][code] = displayed
+        result[target][norm_text(code)] = displayed
+    return result
+
+
 def translate_kobo_single_choice(value, choice_map: dict):
     if pd.isna(value) or not str(value).strip():
         return value
@@ -866,6 +939,13 @@ def fetch_kobo_submissions(base_url: str, asset_uid: str, token: str, refresh_no
 
     location_choice_maps = fetch_kobo_location_choice_maps(base_url, asset_uid, token)
     for target, choice_map in location_choice_maps.items():
+        if target in frame.columns and choice_map:
+            frame[target] = frame[target].map(
+                lambda value, mapping=choice_map: translate_kobo_single_choice(value, mapping)
+            )
+
+    cfs_choice_maps = fetch_kobo_cfs_choice_maps(base_url, asset_uid, token)
+    for target, choice_map in cfs_choice_maps.items():
         if target in frame.columns and choice_map:
             frame[target] = frame[target].map(
                 lambda value, mapping=choice_map: translate_kobo_single_choice(value, mapping)
@@ -1291,6 +1371,27 @@ def clean_location(value) -> str:
     return fuzzy_harmonize(value, LOCATION_LOOKUP, cutoff=0.86)
 
 
+def clean_cfs(value) -> str:
+    """Convert CFS labels or underscored XML codes to user-facing names."""
+    key = norm_text(value)
+    if not key:
+        return MISSING
+    if key in CFS_LOOKUP:
+        return CFS_LOOKUP[key]
+    # XML identifiers become readable tokens after norm_text; title the result
+    # while preserving CFS and common location acronyms consistently.
+    readable = key.replace("cfs", "CFS")
+    parts = []
+    for token in readable.split():
+        if token == "CFS":
+            parts.append(token)
+        elif token in {"ifo"}:
+            parts.append(token.capitalize())
+        else:
+            parts.append(token.capitalize())
+    return " ".join(parts)
+
+
 def clean_disability_type(value) -> str:
     key = norm_text(value)
     if not key:
@@ -1688,11 +1789,14 @@ def prepare_data(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.D
     location_map = {value: clean_location(value) for value in location_values}
     df["location_clean"] = df["location_raw"].map(location_map)
 
-    cfs_cols = ["child_friendly_space_visited", "cfs_visited"]
-    cfs_candidates = df[cfs_cols].replace(r"^\s*$", pd.NA, regex=True)
-    df["cfs_raw"] = cfs_candidates.bfill(axis=1).iloc[:, 0]
+    # Dadaab and Kalobeyei use different CFS select-one questions. Respect the
+    # settlement skip logic instead of relying on a fixed first-nonblank order.
+    dadaab_cfs_candidates = df[["child_friendly_space_visited", "cfs_visited"]].replace(r"^\s*$", pd.NA, regex=True)
+    kalobeyei_cfs_candidates = df[["cfs_visited", "child_friendly_space_visited"]].replace(r"^\s*$", pd.NA, regex=True)
+    df["cfs_raw"] = dadaab_cfs_candidates.bfill(axis=1).iloc[:, 0]
+    df.loc[kalobeyei_mask, "cfs_raw"] = kalobeyei_cfs_candidates.loc[kalobeyei_mask].bfill(axis=1).iloc[:, 0]
     cfs_values = df["cfs_raw"].drop_duplicates()
-    cfs_map = {value: fuzzy_harmonize(value, CFS_LOOKUP, cutoff=0.86) for value in cfs_values}
+    cfs_map = {value: clean_cfs(value) for value in cfs_values}
     df["cfs_clean"] = df["cfs_raw"].map(cfs_map)
     df["games_played_clean"] = df.apply(clean_game, axis=1)
     df["take5_integrated_clean"] = df["take5_activities_integrated"].map(yes_no)
@@ -3089,6 +3193,14 @@ if not df.empty:
     else:
         location_source = df.get("location_clean", pd.Series(MISSING, index=df.index))
     df["location_clean"] = location_source.map(clean_location)
+    if "cfs_raw" in df.columns:
+        cfs_source = df["cfs_raw"].where(
+            df["cfs_raw"].notna() & df["cfs_raw"].astype(str).str.strip().ne(""),
+            df.get("cfs_clean", pd.Series(MISSING, index=df.index)),
+        )
+    else:
+        cfs_source = df.get("cfs_clean", pd.Series(MISSING, index=df.index))
+    df["cfs_clean"] = cfs_source.map(clean_cfs)
 
 if df.empty:
     st.error("The dataset was loaded, but no analysable records remained after preparation.")
@@ -3115,6 +3227,7 @@ with st.sidebar.expander("ℹ Live data & performance", expanded=False):
             fetch_kobo_schema_map.clear()
             fetch_kobo_support_choice_map.clear()
             fetch_kobo_location_choice_maps.clear()
+            fetch_kobo_cfs_choice_maps.clear()
         else:
             source_content_fingerprint.clear()
             load_dashboard_data_cached.clear()
