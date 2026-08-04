@@ -3029,8 +3029,10 @@ if not valid_dates.empty:
         from_date, to_date = to_date, from_date
     filtered = filtered[filtered["date"].between(pd.to_datetime(from_date), pd.to_datetime(to_date), inclusive="both")].copy()
     date_label = f"{from_date:%d %b %Y} to {to_date:%d %b %Y}"
+    date_is_filtered = from_date != min_date or to_date != max_date
 else:
     date_label = "All available dates"
+    date_is_filtered = False
 
 with st.sidebar.expander("📍 Location filters", expanded=True):
     st.caption("Select from broad location to specific CFS; choices cascade automatically.")
@@ -3041,25 +3043,10 @@ with st.sidebar.expander("📍 Location filters", expanded=True):
     selected_cfs = multiselect_filter("🏛 CFS / site", filtered, "cfs_clean")
     filtered = filter_if_selected(filtered, "cfs_clean", selected_cfs)
 
-with st.sidebar.expander("👥 Child and service profile", expanded=False):
-    st.caption("Narrow the records by staff and child characteristics.")
+with st.sidebar.expander("👤 Staff / CPV filter", expanded=False):
+    st.caption("Optionally focus the dashboard on submissions recorded by selected staff.")
     selected_staff = multiselect_filter("👤 Staff / CPV", filtered, "staff_clean")
     filtered = filter_if_selected(filtered, "staff_clean", selected_staff)
-    selected_gender = multiselect_filter("⚧ Gender", filtered, "gender_clean", GENDER_ORDER)
-    filtered = filter_if_selected(filtered, "gender_clean", selected_gender)
-    selected_age = multiselect_filter("🎂 Age group", filtered.assign(age_group=filtered["age_group"].astype(str)), "age_group", AGE_GROUP_ORDER)
-    filtered = filter_if_selected(filtered.assign(age_group=filtered["age_group"].astype(str)), "age_group", selected_age)
-    selected_disability = multiselect_filter("♿ Living with disability", filtered.assign(disability_status_clean=filtered["disability_status_clean"].astype(str)), "disability_status_clean", YES_NO_ORDER)
-    filtered = filter_if_selected(filtered.assign(disability_status_clean=filtered["disability_status_clean"].astype(str)), "disability_status_clean", selected_disability)
-
-with st.sidebar.expander("🎯 Visit and service outcomes", expanded=False):
-    st.caption("Focus the dashboard on visit status or referrals.")
-    selected_first_visit = multiselect_filter("🔄 First visit", filtered.assign(first_visit_clean=filtered["first_visit_clean"].astype(str)), "first_visit_clean", YES_NO_ORDER)
-    filtered = filter_if_selected(filtered.assign(first_visit_clean=filtered["first_visit_clean"].astype(str)), "first_visit_clean", selected_first_visit)
-    selected_referral = multiselect_filter("🔁 Referral made", filtered.assign(referral_made_clean=filtered["referral_made_clean"].astype(str)), "referral_made_clean", YES_NO_ORDER)
-    filtered = filter_if_selected(filtered.assign(referral_made_clean=filtered["referral_made_clean"].astype(str)), "referral_made_clean", selected_referral)
-# First-visit fields are repaired once during cached data preparation; repeating
-# the row-wise repair on every widget interaction needlessly slows navigation.
 
 filter_summary_bits = [
     f"Date selected: {date_label}",
@@ -3067,18 +3054,13 @@ filter_summary_bits = [
     f"Specific camp location: {', '.join(selected_location) if selected_location else 'All specific camp locations'}",
     f"CFS / site: {', '.join(selected_cfs) if selected_cfs else 'All CFS / sites'}",
     f"Staff: {', '.join(selected_staff) if selected_staff else 'All staff'}",
-    f"Gender: {', '.join(selected_gender) if selected_gender else 'All genders'}",
-    f"Age group: {', '.join(selected_age) if selected_age else 'All age groups'}",
-    f"Disability: {', '.join(selected_disability) if selected_disability else 'All disability statuses'}",
-    f"First visit: {', '.join(selected_first_visit) if selected_first_visit else 'All visit statuses'}",
-    f"Referral made: {', '.join(selected_referral) if selected_referral else 'All referral statuses'}",
 ]
 with st.sidebar.expander("Current filter path", expanded=False):
     st.markdown(
         f"<div class='filter-summary'>{'<br>'.join(filter_summary_bits)}</div>",
         unsafe_allow_html=True,
     )
-active_filter_count = sum(bool(values) for values in [selected_camp, selected_location, selected_cfs, selected_staff, selected_gender, selected_age, selected_disability, selected_first_visit, selected_referral])
+active_filter_count = int(date_is_filtered) + sum(bool(values) for values in [selected_camp, selected_location, selected_cfs, selected_staff])
 st.sidebar.markdown(
     f"<div class='filter-result-card'><span>{active_filter_count} active filters · records</span><b>{len(filtered):,}</b></div>",
     unsafe_allow_html=True,
@@ -3116,13 +3098,11 @@ st.markdown(
 )
 
 active_filter_labels = []
-if date_label != "All available dates":
+if date_is_filtered:
     active_filter_labels.append(f"Date: {date_label}")
 for label, values in [
     ("Camp", selected_camp), ("Location", selected_location), ("CFS", selected_cfs),
-    ("Staff", selected_staff), ("Gender", selected_gender), ("Age", selected_age),
-    ("Disability", selected_disability), ("First visit", selected_first_visit),
-    ("Referral", selected_referral),
+    ("Staff", selected_staff),
 ]:
     if values:
         display_values = ", ".join(map(str, values[:2])) + (f" +{len(values) - 2}" if len(values) > 2 else "")
