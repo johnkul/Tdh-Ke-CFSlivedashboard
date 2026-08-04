@@ -59,7 +59,7 @@ KOBO_CACHE_TTL_SECONDS = 1800
 KOBO_REQUEST_TIMEOUT_SECONDS = 45
 PREPARED_DATA_PATH = DATA_DIR / "cfs_dashboard_prepared.pkl"
 PREPARED_CACHE_PATH = BASE_DIR / ".cfs_dashboard_prepared_cache.pkl"
-PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v16"
+PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v17-location-taxonomy"
 
 RAW_TO_TRANSFORMED_COLUMNS = {
     # System / metadata columns
@@ -1261,6 +1261,36 @@ def clean_referral_destination(value) -> str:
     return smart_title(value)
 
 
+def clean_location(value) -> str:
+    """Apply the approved settlement-location taxonomy to labels or XML codes."""
+    key = norm_text(value)
+    if not key:
+        return MISSING
+    if "hagadera" in key:
+        return "Hagadera Camp"
+    if "dagahaley" in key:
+        return "Dagahaley Camp"
+    if re.search(r"\bifo\s*(2|two)\b", key):
+        return "Ifo 2"
+    if "ifo main" in key or re.search(r"\bifo\s*(1|one)\b", key):
+        return "Ifo Main"
+    if "dadaab" in key and "host" in key:
+        return "Dadaab Host Community"
+    if "kalobeyei" in key and "village 1" in key:
+        return "Kalobeyei Village 1"
+    if "kalobeyei" in key and "village 2" in key:
+        return "Kalobeyei Village 2"
+    if "kalobeyei" in key and "village 3" in key:
+        return "Kalobeyei Village 3"
+    if "kalobeyei" in key and "reception" in key:
+        return "Kalobeyei Reception Centre"
+    if "kalobeyei" in key and "host" in key:
+        return "Kalobeyei Host Community"
+    if key in LOCATION_LOOKUP:
+        return LOCATION_LOOKUP[key]
+    return fuzzy_harmonize(value, LOCATION_LOOKUP, cutoff=0.86)
+
+
 def clean_disability_type(value) -> str:
     key = norm_text(value)
     if not key:
@@ -1655,7 +1685,7 @@ def prepare_data(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.D
     kalobeyei_mask = df["settlement_clean"].map(norm_text).str.contains("kalobeyei", na=False)
     df.loc[kalobeyei_mask, "location_raw"] = kalobeyei_candidates.loc[kalobeyei_mask].bfill(axis=1).iloc[:, 0]
     location_values = df["location_raw"].drop_duplicates()
-    location_map = {value: fuzzy_harmonize(value, LOCATION_LOOKUP, cutoff=0.86) for value in location_values}
+    location_map = {value: clean_location(value) for value in location_values}
     df["location_clean"] = df["location_raw"].map(location_map)
 
     cfs_cols = ["child_friendly_space_visited", "cfs_visited"]
@@ -3048,6 +3078,17 @@ if not df.empty:
         categories=AGE_GROUP_ORDER,
         ordered=True,
     )
+    # Enforce location labels after every load, including data returned from an
+    # older in-memory/persisted prepared cache. This prevents XML codes and
+    # legacy labels from resurfacing in filters without requiring a data reload.
+    if "location_raw" in df.columns:
+        location_source = df["location_raw"].where(
+            df["location_raw"].notna() & df["location_raw"].astype(str).str.strip().ne(""),
+            df.get("location_clean", pd.Series(MISSING, index=df.index)),
+        )
+    else:
+        location_source = df.get("location_clean", pd.Series(MISSING, index=df.index))
+    df["location_clean"] = location_source.map(clean_location)
 
 if df.empty:
     st.error("The dataset was loaded, but no analysable records remained after preparation.")
