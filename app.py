@@ -1993,27 +1993,13 @@ def friendly_column_label(name: Optional[str], title: str = "") -> str:
 
 
 def add_display_numbering(display: pd.DataFrame, label_col: Optional[str] = None) -> pd.DataFrame:
-    """Insert a separate 1-based No. column.
-
-    Row labels remain in their own descriptive column; numbering is no longer
-    joined to the row value.
-    """
-    out = display.copy().reset_index(drop=True)
-    serials = []
-    n = 1
-    for _, row in out.iterrows():
-        is_total = any(str(v) == "Grand Total" for v in row.values)
-        if is_total:
-            serials.append("")
-        else:
-            serials.append(n)
-            n += 1
-    out.insert(0, "No.", serials)
-    return out
+    """Return a clean display frame without a non-analytical serial column."""
+    del label_col  # Retained in the signature for compatibility with callers.
+    return display.copy().reset_index(drop=True)
 
 
 def flatten_table(table: pd.DataFrame, title: str = "") -> pd.DataFrame:
-    """Flatten tables for CSV export using clean 1-based row numbering."""
+    """Flatten tables for CSV export without a redundant serial column."""
     flat = table.copy()
     row_label_col = None
 
@@ -2045,8 +2031,8 @@ def flatten_table(table: pd.DataFrame, title: str = "") -> pd.DataFrame:
 def table_display_frame(table: pd.DataFrame, title: str = "") -> pd.DataFrame:
     """Convert any normal/MultiIndex dataframe into a clean display dataframe.
 
-    There is no separate generic Category column. For indexed summary tables,
-    the 1-based row number is merged into the descriptive row-label column.
+    Indexed summary tables retain only their descriptive row-label column;
+    no separate numbering/index column is displayed.
     """
     display = table.copy()
     row_label_col = None
