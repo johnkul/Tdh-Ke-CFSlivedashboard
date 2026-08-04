@@ -59,7 +59,7 @@ KOBO_CACHE_TTL_SECONDS = 1800
 KOBO_REQUEST_TIMEOUT_SECONDS = 45
 PREPARED_DATA_PATH = DATA_DIR / "cfs_dashboard_prepared.pkl"
 PREPARED_CACHE_PATH = BASE_DIR / ".cfs_dashboard_prepared_cache.pkl"
-PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v18-location-cfs-taxonomy"
+PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v19-camp-location-cfs-taxonomy"
 
 RAW_TO_TRANSFORMED_COLUMNS = {
     # System / metadata columns
@@ -757,7 +757,7 @@ def fetch_kobo_support_choice_map(base_url: str, asset_uid: str, token: str) -> 
 
 @st.cache_data(show_spinner=False, ttl=3600, max_entries=4)
 def fetch_kobo_location_choice_maps(base_url: str, asset_uid: str, token: str) -> dict:
-    """Map Kobo XML codes to displayed labels for the two location questions."""
+    """Map Kobo XML codes to labels for camp and settlement-location fields."""
     url = f"{base_url.rstrip('/')}/api/v2/assets/{asset_uid}/"
     headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
     response = requests.get(url, headers=headers, timeout=KOBO_REQUEST_TIMEOUT_SECONDS)
@@ -765,7 +765,7 @@ def fetch_kobo_location_choice_maps(base_url: str, asset_uid: str, token: str) -
     content = response.json().get("content", {}) or {}
     survey = content.get("survey", []) or []
     choices = content.get("choices", []) or []
-    targets = {"specific_camp_location", "camp_location_alt"}
+    targets = {"camp_of_information_seeking", "specific_camp_location", "camp_location_alt"}
 
     stripped_map = {str(key).strip(): value for key, value in RAW_TO_TRANSFORMED_COLUMNS.items()}
     normalized_map = {norm_text(key): value for key, value in RAW_TO_TRANSFORMED_COLUMNS.items()}
@@ -1371,6 +1371,18 @@ def clean_location(value) -> str:
     return fuzzy_harmonize(value, LOCATION_LOOKUP, cutoff=0.86)
 
 
+def clean_settlement(value) -> str:
+    """Normalize Kobo camp/settlement choice labels and XML codes."""
+    key = norm_text(value)
+    if not key:
+        return MISSING
+    if "dadaab" in key:
+        return "Dadaab Refugee Camp"
+    if "kalobeyei" in key:
+        return "Kalobeyei Settlement"
+    return smart_title(str(value).replace("_", " "))
+
+
 def clean_cfs(value) -> str:
     """Convert CFS labels or underscored XML codes to user-facing names."""
     key = norm_text(value)
@@ -1775,7 +1787,7 @@ def prepare_data(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.D
     df["disability_type_display"] = df["disability_type_source"].map(clean_disability_type)
     df.loc[df["disability_status_clean"].astype(str) != "Yes", "disability_type_display"] = MISSING
 
-    df["settlement_clean"] = df["camp_of_information_seeking"].map(smart_title)
+    df["settlement_clean"] = df["camp_of_information_seeking"].map(clean_settlement)
     # The form uses different select-one location questions by settlement:
     # Dadaab -> specific_camp_location; Kalobeyei -> camp_location_alt.
     # Select conditionally so a skipped/legacy field can never override the
@@ -3182,6 +3194,8 @@ if not df.empty:
         categories=AGE_GROUP_ORDER,
         ordered=True,
     )
+    if "camp_of_information_seeking" in df.columns:
+        df["settlement_clean"] = df["camp_of_information_seeking"].map(clean_settlement)
     # Enforce location labels after every load, including data returned from an
     # older in-memory/persisted prepared cache. This prevents XML codes and
     # legacy labels from resurfacing in filters without requiring a data reload.
