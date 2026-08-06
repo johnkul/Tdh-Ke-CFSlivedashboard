@@ -52,7 +52,7 @@ DEVELOPER_LOGO_PATH = BASE_DIR / "assets" / "developer-logo.png"
 CSS_PATH = BASE_DIR / "assets" / "styles.css"
 APP_VERSION = "Version 1.1 · Kobo live data · August 2026"
 SCHEMA_CONTRACT_VERSION = "cfs-schema-2026.08"
-TABLE_RENDER_CACHE_VERSION = "tables-without-index-v2"
+TABLE_RENDER_CACHE_VERSION = "compact-content-aware-tables-v3"
 # Keep prepared data hot for normal navigation. Administrators can bypass this
 # window at any time with “Fetch latest Kobo data”.
 KOBO_CACHE_TTL_SECONDS = 1800
@@ -2370,8 +2370,20 @@ def build_professional_table_html(table: pd.DataFrame, title: str, precision: in
         body_rows.append(f"<tr class='{row_class}'>" + "".join(cells) + "</tr>")
 
     tbody = "".join(body_rows)
-    height = min(820, max(360, 164 + min(row_count, 12) * 42))
-    scroll_height = max(220, height - 135)
+    # Size the iframe to the rows that are actually visible. The former
+    # 360-pixel minimum left a large blank area below short tables because the
+    # card itself was much shorter than the reserved Streamlit component.
+    visible_rows = max(1, min(row_count, 12))
+    table_header_height = 43
+    row_height = 41
+    horizontal_scroll_allowance = 16
+    card_header_height = 76
+    scroll_height = (
+        table_header_height
+        + visible_rows * row_height
+        + horizontal_scroll_allowance
+    )
+    height = min(760, card_header_height + scroll_height + 4)
 
     html_doc = f"""
     <!doctype html>
@@ -2589,9 +2601,18 @@ def page_header(title: str, subtitle: Optional[str] = None) -> None:
 
 
 def section_header(title: str, subtitle: Optional[str] = None) -> None:
-    st.markdown(f"<div class='section-heading'>{title}</div>", unsafe_allow_html=True)
-    if subtitle:
-        st.markdown(f"<div class='section-subtitle'>{subtitle}</div>", unsafe_allow_html=True)
+    subtitle_html = (
+        f"<div class='section-subtitle'>{html_lib.escape(subtitle)}</div>"
+        if subtitle
+        else ""
+    )
+    st.markdown(
+        "<div class='section-header-block'>"
+        f"<div class='section-heading'>{html_lib.escape(title)}</div>"
+        f"{subtitle_html}"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def metric_card(label, value, helper=None, tone="primary") -> None:

@@ -38,7 +38,12 @@ body,
 .main .block-container {
   max-width: 1500px;
   padding-top: 1.15rem;
-  padding-bottom: 3rem;
+  padding-bottom: 2rem;
+}
+
+/* Keep analytical sections compact without tightening the sidebar controls. */
+.main [data-testid="stVerticalBlock"] {
+  gap: 0.78rem;
 }
 
 h1,
@@ -274,8 +279,12 @@ div[data-baseweb="select"] > div,
 }
 
 /* Section headings */
+.section-header-block {
+  margin: 0.7rem 0 0.35rem;
+}
+
 .section-heading {
-  margin: 1.35rem 0 0.45rem;
+  margin: 0;
   color: var(--tdh-primary-900) !important;
   font-size: 1.52rem;
   line-height: 1.25;
@@ -285,11 +294,11 @@ div[data-baseweb="select"] > div,
 
 .dashboard-section-heading {
   font-size: 1.75rem;
-  margin-top: 1.45rem;
+  margin-top: 0.8rem;
 }
 
 .section-subtitle {
-  margin: -0.2rem 0 0.95rem;
+  margin: 0.18rem 0 0;
   color: #475569 !important;
   font-size: 0.98rem;
   font-weight: 650;
@@ -350,6 +359,11 @@ button[kind="primary"],
 button[kind="primary"] p,
 button[kind="primary"] span {
   color: #ffffff !important;
+}
+
+.main .stDownloadButton {
+  margin-top: -0.1rem;
+  margin-bottom: 0.2rem;
 }
 
 button:disabled,
@@ -445,7 +459,7 @@ div[data-testid="stDataFrame"] [role="columnheader"] {
 /* Dividers */
 hr {
   border-color: var(--tdh-border) !important;
-  margin: 1.35rem 0 !important;
+  margin: 0.75rem 0 !important;
 }
 
 /* Small screens */
@@ -897,7 +911,7 @@ section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb:hover {
   display: flex;
   gap: .95rem;
   align-items: center;
-  margin: 1rem 0 1.2rem;
+  margin: 0.65rem 0 0.8rem;
   padding: 1rem 1.15rem;
   border: 1px solid #bfdbfe;
   border-left: 6px solid #1d4ed8;
