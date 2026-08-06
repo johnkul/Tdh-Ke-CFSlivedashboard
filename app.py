@@ -52,7 +52,7 @@ DEVELOPER_LOGO_PATH = BASE_DIR / "assets" / "developer-logo.png"
 CSS_PATH = BASE_DIR / "assets" / "styles.css"
 APP_VERSION = "Version 1.1 · Kobo live data · August 2026"
 SCHEMA_CONTRACT_VERSION = "cfs-schema-2026.08"
-TABLE_RENDER_CACHE_VERSION = "compact-content-aware-tables-v3"
+TABLE_RENDER_CACHE_VERSION = "compact-header-download-v4"
 # Keep prepared data hot for normal navigation. Administrators can bypass this
 # window at any time with “Fetch latest Kobo data”.
 KOBO_CACHE_TTL_SECONDS = 1800
@@ -2322,7 +2322,12 @@ def format_table_value(value, column_name: str = "", precision: int = 0) -> str:
     return str(value)
 
 
-def build_professional_table_html(table: pd.DataFrame, title: str, precision: int = 0) -> Tuple[str, int]:
+def build_professional_table_html(
+    table: pd.DataFrame,
+    title: str,
+    csv_data: bytes,
+    precision: int = 0,
+) -> Tuple[str, int]:
     """Build a self-contained, iframe-safe professional HTML table.
 
     This avoids Streamlit's dataframe styling limitations and makes the table
@@ -2330,6 +2335,9 @@ def build_professional_table_html(table: pd.DataFrame, title: str, precision: in
     """
     display = table_display_frame(table, title=title)
     row_count, col_count = display.shape
+    csv_href = "data:text/csv;base64," + base64.b64encode(csv_data).decode("ascii")
+    csv_filename = html_lib.escape(f"{file_slug(title)}.csv", quote=True)
+    escaped_title = html_lib.escape(title)
 
     numeric_cols = []
     max_values = {}
@@ -2406,8 +2414,26 @@ def build_professional_table_html(table: pd.DataFrame, title: str, precision: in
           padding:1rem 1.15rem; background:linear-gradient(135deg,#fff 0%,#eff6ff 100%);
           border-bottom:1px solid var(--border);
         }}
-        .table-title {{ color:var(--primary-dark); font-size:1.05rem; font-weight:950; letter-spacing:-.02em; }}
-        .table-subtitle {{ margin-top:.2rem; color:var(--muted); font-size:.82rem; font-weight:650; }}
+        .table-header-copy {{ min-width:0; }}
+        .table-title {{
+          overflow:hidden; color:var(--primary-dark); font-size:1.05rem; font-weight:950;
+          letter-spacing:-.02em; text-overflow:ellipsis; white-space:nowrap;
+        }}
+        .table-subtitle {{
+          overflow:hidden; margin-top:.2rem; color:var(--muted); font-size:.82rem;
+          font-weight:650; text-overflow:ellipsis; white-space:nowrap;
+        }}
+        .table-download {{
+          display:inline-flex; flex:0 0 auto; align-items:center; justify-content:center; gap:.38rem;
+          min-height:34px; padding:.42rem .72rem; color:#1e40af; background:#eff6ff;
+          border:1px solid #bfdbfe; border-radius:9px; font-size:.78rem; font-weight:850;
+          line-height:1; text-decoration:none; transition:background .15s ease,border-color .15s ease,transform .15s ease;
+        }}
+        .table-download:hover {{
+          background:#dbeafe; border-color:#60a5fa; transform:translateY(-1px);
+        }}
+        .table-download:focus-visible {{ outline:3px solid rgba(37,99,235,.24); outline-offset:2px; }}
+        .table-download-icon {{ font-size:1rem; line-height:1; }}
         .table-scroll {{ max-height:{scroll_height}px; overflow:auto; background:#fff; }}
         table {{ width:max-content; min-width:100%; table-layout:auto; border-collapse:separate; border-spacing:0; font-size:.86rem; line-height:1.35; }}
         thead th {{
@@ -2435,7 +2461,9 @@ def build_professional_table_html(table: pd.DataFrame, title: str, precision: in
         }}
         tr.total-row td.first-col {{ background:#dbeafe !important; color:#172554; }}
         @media (max-width:900px) {{
-          .table-card-header {{ flex-direction:column; align-items:flex-start; }}
+          .table-card-header {{ gap:.65rem; padding:.85rem .9rem; }}
+          .table-download {{ width:34px; min-height:34px; padding:0; }}
+          .table-download-text {{ display:none; }}
           table {{ min-width:100%; font-size:.82rem; }}
           tbody td, thead th {{ padding:9px 11px; }}
         }}
@@ -2444,10 +2472,14 @@ def build_professional_table_html(table: pd.DataFrame, title: str, precision: in
     <body>
       <div class="table-card">
         <div class="table-card-header">
-          <div>
-            <div class="table-title">{html_lib.escape(title)}</div>
+          <div class="table-header-copy">
+            <div class="table-title" title="{escaped_title}">{escaped_title}</div>
             <div class="table-subtitle">{row_count:,} rows · {col_count:,} columns · current filters applied</div>
           </div>
+          <a class="table-download" href="{csv_href}" download="{csv_filename}" aria-label="Download {escaped_title} as CSV" title="Download table as CSV">
+            <span class="table-download-icon" aria-hidden="true">&#8595;</span>
+            <span class="table-download-text">Download CSV</span>
+          </a>
         </div>
         <div class="table-scroll">
           <table>
@@ -2467,19 +2499,10 @@ def render_table(table: pd.DataFrame, title: str, key: str, precision: int = 0) 
         st.info("No records available for this table.")
         return
 
-    flat, sig, html_doc, height, csv_data = cached_table_assets(
+    _, _, html_doc, height, _ = cached_table_assets(
         table, title, precision, TABLE_RENDER_CACHE_VERSION
     )
     components.html(html_doc, height=height, scrolling=False)
-
-    st.download_button(
-        "⬇ Download table as CSV",
-        data=csv_data,
-        file_name=f"{file_slug(title)}.csv",
-        mime="text/csv",
-        key=f"download_{key}_{sig}",
-        use_container_width=True,
-    )
 
 
 @st.cache_data(show_spinner=False, max_entries=128)
@@ -2488,8 +2511,13 @@ def cached_table_assets(table: pd.DataFrame, title: str, precision: int, cache_v
     del cache_version  # Cache-key version; bump whenever presentation rules change.
     flat = flatten_table(table, title=title)
     sig = df_signature(flat)
-    html_doc, height = build_professional_table_html(table, title=title, precision=precision)
     csv_data = flat.to_csv(index=False).encode("utf-8")
+    html_doc, height = build_professional_table_html(
+        table,
+        title=title,
+        csv_data=csv_data,
+        precision=precision,
+    )
     return flat, sig, html_doc, height, csv_data
 
 
