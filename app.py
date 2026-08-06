@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import html as html_lib
 import os
 import re
@@ -294,7 +295,7 @@ STAFF_MAP = {
     "nyakhor buob": "Nyakhor Buob Tang", "nyqkhor buob tang": "Nyakhor Buob Tang", "nyakhor": "Nyakhor Buob Tang",
     "halimo ahmed": "Halimo Ahmed", "halimo": "Halimo Ahmed",
     "agnes ingiara": "Agnes Ingiara", "agnes ingiara oreste": "Agnes Ingiara",
-    "agnes oreste": "Agnes Ingiara", "Agnes Y": "Agnes Ingiara",
+    "agnes oreste": "Agnes Ingiara",
     "oweteshe mirindi": "Oweteshe Mirindi", "rahmo abdi": "Rahmo Abdi",
     "ongoro john": "Ongoro John", "ongoro john tadeo": "Ongoro John", "ongoro john tadeow": "Ongoro John",
     "ong0ro john tadeo": "Ongoro John",
@@ -620,6 +621,50 @@ def setting(name: str, default=None):
     except Exception:
         value = default
     return os.environ.get(name, value)
+
+
+STAFF_DEVICE_PASSWORD_INPUT_KEY = "staff_device_audit_password_input"
+STAFF_DEVICE_UNLOCK_UNTIL_KEY = "staff_device_audit_unlocked_until"
+STAFF_DEVICE_AUTH_ERROR_KEY = "staff_device_audit_auth_error"
+
+
+def configured_staff_device_password() -> str:
+    """Return the staff-device audit password without ever displaying it."""
+    password = str(setting("STAFF_DEVICE_AUDIT_PASSWORD", "") or "").strip()
+    if not password or password.upper().startswith("REPLACE_WITH"):
+        return ""
+    return password
+
+
+def unlock_staff_device_audit() -> None:
+    """Validate the password and unlock sensitive device metadata temporarily."""
+    expected = configured_staff_device_password()
+    supplied = str(st.session_state.get(STAFF_DEVICE_PASSWORD_INPUT_KEY, ""))
+    st.session_state[STAFF_DEVICE_PASSWORD_INPUT_KEY] = ""
+
+    if expected and hmac.compare_digest(
+        supplied.encode("utf-8"), expected.encode("utf-8")
+    ):
+        try:
+            session_minutes = max(
+                1, min(60, int(setting("STAFF_DEVICE_AUDIT_SESSION_MINUTES", 10)))
+            )
+        except (TypeError, ValueError):
+            session_minutes = 10
+        st.session_state[STAFF_DEVICE_UNLOCK_UNTIL_KEY] = (
+            time.time() + session_minutes * 60
+        )
+        st.session_state[STAFF_DEVICE_AUTH_ERROR_KEY] = False
+    else:
+        st.session_state.pop(STAFF_DEVICE_UNLOCK_UNTIL_KEY, None)
+        st.session_state[STAFF_DEVICE_AUTH_ERROR_KEY] = True
+
+
+def lock_staff_device_audit() -> None:
+    """Immediately remove access to sensitive staff-device metadata."""
+    st.session_state.pop(STAFF_DEVICE_UNLOCK_UNTIL_KEY, None)
+    st.session_state.pop(STAFF_DEVICE_PASSWORD_INPUT_KEY, None)
+    st.session_state.pop(STAFF_DEVICE_AUTH_ERROR_KEY, None)
 
 
 def kobo_configured() -> bool:
@@ -3245,7 +3290,12 @@ if auth_required:
     st.sidebar.button("Sign out", on_click=st.logout, use_container_width=True)
 if st.sidebar.button("↺ Reset view", use_container_width=True, help="Clear active filters and return to the default dashboard view."):
     for state_key in list(st.session_state.keys()):
-        if state_key.startswith("filter_") or state_key in {"date_from_filter", "date_to_filter", "dashboard_section", "dashboard_section_category"}:
+        if (
+            state_key.startswith("filter_")
+            or state_key.startswith("staff_device_audit_")
+            or state_key
+            in {"date_from_filter", "date_to_filter", "dashboard_section", "dashboard_section_category"}
+        ):
             st.session_state.pop(state_key, None)
     st.rerun()
 
@@ -3704,6 +3754,161 @@ elif section == "CPVs KPIs":
         cpv["First_Date"] = pd.to_datetime(cpv["First_Date"], errors="coerce").dt.strftime("%d %b %Y").fillna("")
         cpv["Last_Date"] = pd.to_datetime(cpv["Last_Date"], errors="coerce").dt.strftime("%d %b %Y").fillna("")
     render_table(cpv.rename(columns={"staff_clean": "Staff / CPV", "First_Visit_Yes": "First Visits", "Referrals_Yes": "Referrals", "Disability_Yes": "Disability Count", "Unique_CFS": "Unique CFS", "First_Date": "First Date", "Last_Date": "Last Date"}), "CPV Performance Summary", "cpv_summary", precision=1)
+
+    device_audit_password = configured_staff_device_password()
+    try:
+        device_audit_unlocked_until = float(
+            st.session_state.get(STAFF_DEVICE_UNLOCK_UNTIL_KEY, 0) or 0
+        )
+    except (TypeError, ValueError):
+        device_audit_unlocked_until = 0
+    device_audit_unlocked = bool(
+        device_audit_password and device_audit_unlocked_until > time.time()
+    )
+    if device_audit_unlocked_until and not device_audit_unlocked:
+        lock_staff_device_audit()
+
+    with st.expander(
+        "🔒 Staff submission devices",
+        expanded=device_audit_unlocked,
+    ):
+        st.caption(
+            "Restricted operational view linking harmonised staff names to Kobo device and account metadata. "
+            "Values follow the current dashboard filters and are not downloadable from this panel."
+        )
+
+        if not device_audit_password:
+            st.warning(
+                "This panel is disabled until STAFF_DEVICE_AUDIT_PASSWORD is configured in Streamlit Secrets."
+            )
+        elif not device_audit_unlocked:
+            with st.form("staff_device_audit_unlock_form", clear_on_submit=False):
+                st.text_input(
+                    "Panel password",
+                    type="password",
+                    key=STAFF_DEVICE_PASSWORD_INPUT_KEY,
+                )
+                st.form_submit_button(
+                    "Unlock staff device view",
+                    type="primary",
+                    on_click=unlock_staff_device_audit,
+                )
+            if st.session_state.get(STAFF_DEVICE_AUTH_ERROR_KEY, False):
+                st.error("The password is incorrect. Access remains locked.")
+        else:
+            access_col, lock_col = st.columns([5, 1])
+            with access_col:
+                minutes_remaining = max(
+                    1, int((device_audit_unlocked_until - time.time() + 59) // 60)
+                )
+                st.success(
+                    f"Restricted view unlocked for this browser session ({minutes_remaining} minute(s) remaining)."
+                )
+            with lock_col:
+                st.button(
+                    "Lock now",
+                    key="staff_device_audit_lock_button",
+                    use_container_width=True,
+                    on_click=lock_staff_device_audit,
+                )
+
+            device_source = filtered.loc[
+                ~filtered["staff_clean"].astype(str).isin([MISSING, REVIEW]),
+                [
+                    "record_id",
+                    "staff_clean",
+                    "deviceid",
+                    "username",
+                    "submitted_by",
+                    "submission_time",
+                    "date",
+                ],
+            ].copy()
+
+            if device_source.empty:
+                st.info("No staff submissions match the current filters.")
+            else:
+                raw_device_id = device_source["deviceid"].fillna("").astype(str).str.strip()
+                device_id_captured = ~raw_device_id.str.lower().isin(
+                    {"", "nan", "none", "n/a", MISSING.lower()}
+                )
+                device_source["Device ID"] = raw_device_id.where(
+                    device_id_captured, "Not captured"
+                )
+
+                submission_timestamp = pd.to_datetime(
+                    device_source["submission_time"], errors="coerce", utc=True
+                ).dt.tz_convert("Africa/Nairobi").dt.tz_localize(None)
+                fallback_date = pd.to_datetime(device_source["date"], errors="coerce")
+                device_source["_submission_timestamp"] = submission_timestamp.fillna(
+                    fallback_date
+                )
+
+                def joined_device_metadata(series: pd.Series) -> str:
+                    values = {
+                        str(value).strip()
+                        for value in series
+                        if pd.notna(value)
+                        and str(value).strip()
+                        and str(value).strip().lower()
+                        not in {"nan", "none", "n/a", MISSING.lower()}
+                    }
+                    return ", ".join(sorted(values)) if values else "Not captured"
+
+                device_summary = (
+                    device_source.groupby(
+                        ["staff_clean", "Device ID"], observed=True, dropna=False
+                    )
+                    .agg(
+                        Records=("record_id", "count"),
+                        Kobo_Username=("username", joined_device_metadata),
+                        Kobo_Submitted_By=("submitted_by", joined_device_metadata),
+                        First_Submission=("_submission_timestamp", "min"),
+                        Last_Submission=("_submission_timestamp", "max"),
+                    )
+                    .reset_index()
+                    .rename(
+                        columns={
+                            "staff_clean": "Staff / CPV",
+                            "Kobo_Username": "Kobo username",
+                            "Kobo_Submitted_By": "Kobo submitted by",
+                            "First_Submission": "First submission",
+                            "Last_Submission": "Latest submission",
+                        }
+                    )
+                    .sort_values(["Records", "Staff / CPV"], ascending=[False, True])
+                )
+                for timestamp_col in ["First submission", "Latest submission"]:
+                    device_summary[timestamp_col] = (
+                        pd.to_datetime(device_summary[timestamp_col], errors="coerce")
+                        .dt.strftime("%d %b %Y %H:%M")
+                        .fillna("Not captured")
+                    )
+
+                captured_records = int(device_id_captured.sum())
+                unique_devices = int(
+                    raw_device_id.loc[device_id_captured].replace("", pd.NA).nunique()
+                )
+                coverage = captured_records / len(device_source) if len(device_source) else 0
+                d1, d2, d3 = st.columns(3)
+                with d1:
+                    st.metric("Devices captured", f"{unique_devices:,}")
+                with d2:
+                    st.metric("Records with device ID", f"{captured_records:,}")
+                with d3:
+                    st.metric("Device ID coverage", f"{coverage:.1%}")
+
+                st.markdown(
+                    '<div class="read-only-raw-table-marker" aria-hidden="true"></div>',
+                    unsafe_allow_html=True,
+                )
+                st.dataframe(
+                    device_summary,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(560, max(180, 38 * len(device_summary) + 42)),
+                )
+
     staff_chart_source = filtered[
         ~filtered["staff_clean"].astype(str).isin([MISSING, REVIEW])
     ].copy()
