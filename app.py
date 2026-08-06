@@ -294,7 +294,7 @@ STAFF_MAP = {
     "nyakhor buob": "Nyakhor Buob Tang", "nyqkhor buob tang": "Nyakhor Buob Tang", "nyakhor": "Nyakhor Buob Tang",
     "halimo ahmed": "Halimo Ahmed", "halimo": "Halimo Ahmed",
     "agnes ingiara": "Agnes Ingiara", "agnes ingiara oreste": "Agnes Ingiara",
-    "agnes oreste": "Agnes Ingiara",
+    "agnes oreste": "Agnes Ingiara", "Agnes Y": "Agnes Ingiara",
     "oweteshe mirindi": "Oweteshe Mirindi", "rahmo abdi": "Rahmo Abdi",
     "ongoro john": "Ongoro John", "ongoro john tadeo": "Ongoro John", "ongoro john tadeow": "Ongoro John",
     "ong0ro john tadeo": "Ongoro John",
