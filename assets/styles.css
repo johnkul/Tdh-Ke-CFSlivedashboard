@@ -366,6 +366,17 @@ button[kind="primary"] span {
   margin-bottom: 0.2rem;
 }
 
+/* The Filtered Raw Data view is intentionally inspection-only. Hide the
+   dataframe action toolbar so no CSV control is presented for this table. */
+.read-only-raw-table-marker {
+  display: none;
+}
+
+.main [data-testid="stVerticalBlock"]:has(.read-only-raw-table-marker) [data-testid="stDataFrame"] button,
+.main [data-testid="stVerticalBlock"]:has(.read-only-raw-table-marker) [data-testid="stDataFrame"] [data-testid="stElementToolbar"] {
+  display: none !important;
+}
+
 button:disabled,
 button[disabled] {
   opacity: 0.55 !important;

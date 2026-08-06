@@ -2664,7 +2664,7 @@ SECTION_META = {
     "Protection & Support": {"icon": "🛡️", "label": "Protection Needs & Support", "desc": "Use this section to understand disability, reported issues and support provided."},
     "Referrals": {"icon": "🔁", "label": "Referrals", "desc": "Referral rates, destinations and external referral agency breakdowns."},
     "Data Quality": {"icon": "✅", "label": "Data Quality", "desc": "Completeness checks and harmonisation review for operational data quality."},
-    "Raw Data": {"icon": "📄", "label": "Records & Export", "desc": "Use this section to inspect filtered records and prepare a privacy-safe export."},
+    "Raw Data": {"icon": "📄", "label": "Filtered Records", "desc": "Inspect filtered, non-identifying records in a read-only view. Downloads are intentionally disabled."},
 }
 
 SECTION_OPTIONS = ["Overview", "Monthly Trends", "CPVs KPIs", "Demographics", "Games & Activities", "Protection & Support", "Referrals", "Data Quality", "Raw Data"]
@@ -2677,7 +2677,7 @@ SECTION_CATEGORY = {
     "Protection & Support": "Protection needs and response",
     "Referrals": "Referral pathway",
     "Data Quality": "Data governance",
-    "Raw Data": "Record review and export",
+    "Raw Data": "Read-only record review",
 }
 
 SECTION_NAV_TONES = {
@@ -2913,7 +2913,7 @@ def build_section_takeaways(
 
     elif section == "Raw Data":
         findings.append(f"This view contains {total:,} filtered records for validation and review rather than causal interpretation.")
-        findings.append("The downloadable extract removes direct identifiers and sensitive location or metadata fields.")
+        findings.append("The table is read-only, excludes configured direct identifiers, and intentionally provides no CSV export.")
 
     # Add one consistent gender-disaggregation sentence when usable values are
     # present. It reports the actual denominator and does not infer causation.
@@ -4033,12 +4033,22 @@ elif section == "Raw Data":
         "record_id", "date", "settlement_clean", "location_clean", "cfs_clean", "staff_clean", "gender_clean", "age_clean", "age_group", "disability_status_clean", "first_visit_source_raw", "first_visit_clean", "referral_made_clean", "issues_combined", "support_combined", "games_played_clean", "take5_integrated_clean",
     ]
     display_cols = [c for c in display_cols if c in filtered.columns]
-    st.dataframe(filtered[display_cols], use_container_width=True, hide_index=True)
-    st.caption("Privacy protection: names, telephone numbers, individual identifiers, device/user identifiers, GPS data, notes, and UUID fields are excluded from this download.")
-    prepare_export = st.checkbox("Prepare privacy-safe CSV download", value=False, help="CSV bytes are created only when requested, which keeps ordinary page opening faster.")
-    if prepare_export:
-        safe_filtered_export = privacy_safe_export(filtered)
-        st.download_button("⬇ Download privacy-safe filtered data CSV", safe_filtered_export.to_csv(index=False).encode("utf-8"), file_name="filtered_cfs_data_privacy_safe.csv", mime="text/csv", use_container_width=True)
+    st.caption(
+        "Read-only inspection view. Names, telephone numbers, individual identifiers, "
+        "device/user identifiers, GPS data, notes, and UUID fields are excluded. "
+        "CSV export is disabled for this table."
+    )
+    with st.container():
+        st.markdown(
+            '<div class="read-only-raw-table-marker" aria-hidden="true"></div>',
+            unsafe_allow_html=True,
+        )
+        st.dataframe(
+            filtered[display_cols],
+            use_container_width=True,
+            hide_index=True,
+            height=560,
+        )
 
 
 # Footer
