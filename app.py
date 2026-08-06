@@ -59,7 +59,7 @@ KOBO_CACHE_TTL_SECONDS = 1800
 KOBO_REQUEST_TIMEOUT_SECONDS = 45
 PREPARED_DATA_PATH = DATA_DIR / "cfs_dashboard_prepared.pkl"
 PREPARED_CACHE_PATH = BASE_DIR / ".cfs_dashboard_prepared_cache.pkl"
-PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v20-today-date"
+PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v22-single-name-harmonization"
 
 RAW_TO_TRANSFORMED_COLUMNS = {
     # System / metadata columns
@@ -260,7 +260,8 @@ STAFF_MAP = {
     "mohamed sidi": "Mohamed Sidi", "mohamed": "Mohamed Sidi",
     "halima amin": "Halima Amin",
     "moge garad": "Moge Garad", "moge": "Moge Garad", "more garad": "Moge Garad",
-    "daud hussein": "Daud Hussein",
+    "daud hussein": "Daud Hussein", "daud": "Daud Hussein",
+    "daud hussein muhumed": "Daud Hussein",
     "maslah mohamed hassan": "Maslah Mohamed Hassan", "maslah mohamed hasssan": "Maslah Mohamed Hassan",
     "maslah mohamed": "Maslah Mohamed Hassan", "maslsh mohamed hassan": "Maslah Mohamed Hassan",
     "maslish mohamed": "Maslah Mohamed Hassan", "maslah kohamed hassan": "Maslah Mohamed Hassan",
@@ -269,36 +270,52 @@ STAFF_MAP = {
     "ndayikeje": "Ndayikeje Ferdinand", "ferdinand": "Ndayikeje Ferdinand",
     "teresia natire thomas": "Teresia Natire Thomas", "teresia natire": "Teresia Natire Thomas",
     "haret derow ibrahim": "Haret Derow Ibrahim", "haret derow": "Haret Derow Ibrahim", "hared derow": "Haret Derow Ibrahim",
-    "beatrice akwero": "Beatrice Akwero",
-    "david otifo": "David Otifo", "dave otifo": "David Otifo",
+    "beatrice akwero": "Beatrice Akwero", "beatrice": "Beatrice Akwero",
+    "david otifo": "David Otifo", "dave otifo": "David Otifo", "david": "David Otifo",
     "farah mohamed hussein": "Farah Mohamed Hussein",
     "musdaf mohamed hassan": "Musdaf Mohamed Hassan", "musdaf mohamed": "Musdaf Mohamed Hassan",
     "hirwa gentille": "Hirwa Gentille", "hirwa": "Hirwa Gentille",
+    "gentille hirwa": "Hirwa Gentille", "gentelie hirwa": "Hirwa Gentille",
+    "gentilie hirwa": "Hirwa Gentille", "gentile hirwa": "Hirwa Gentille",
     "oliek omot": "Oliek Omot", "nelson amanya": "Nelson Amanya",
     "dimo justin": "Dimo Justin", "dimo": "Dimo Justin", "louis kyanza": "Louis Kyanza",
     "dominic nangiro lomil": "Dominic Nangiro Lomil", "dominic nangiro": "Dominic Nangiro Lomil",
     "leer biel leer": "Leer Biel Leer", "spora niyikiza": "Spora Niyikiza", "niyikiza spora": "Spora Niyikiza",
-    "jean claude": "Jean Claude", "fowzia omar": "Fowzia Omar",
+    "jean claude": "Jean Claude", "fowzia omar": "Fowzia Omar", "fowzia": "Fowzia Omar",
     "yaak akech": "Yaak Akech", "aketch yaak": "Yaak Akech", "akech yaak": "Yaak Akech",
-    "peter kingombe": "Peter Kingombe",
+    "peter kingombe": "Peter Kingombe", "peter": "Peter Kingombe",
     "dual ador arok": "Dual Ador Arok", "dual ador": "Dual Ador Arok", "ador arok dual": "Dual Ador Arok",
+    "dual adkr": "Dual Ador Arok",
     "gatwech bayak": "Gatwech Bayak", "gatwech": "Gatwech Bayak",
     "armele ngakani": "Armele Ngakani", "armele": "Armele Ngakani", "john wani": "John Wani",
-    "safari david": "Safari David", "safali": "Safari David", "epusie brenda": "Epusie Brenda",
+    "safari david": "Safari David", "safari": "Safari David", "safali": "Safari David",
+    "epusie brenda": "Epusie Brenda", "epusie": "Epusie Brenda",
     "zahara issack": "Zahara Issack", "zahara": "Zahara Issack",
     "nyakhor buob": "Nyakhor Buob Tang", "nyqkhor buob tang": "Nyakhor Buob Tang", "nyakhor": "Nyakhor Buob Tang",
     "halimo ahmed": "Halimo Ahmed", "halimo": "Halimo Ahmed",
     "agnes ingiara": "Agnes Ingiara", "agnes ingiara oreste": "Agnes Ingiara",
+    "agnes oreste": "Agnes Ingiara",
     "oweteshe mirindi": "Oweteshe Mirindi", "rahmo abdi": "Rahmo Abdi",
     "ongoro john": "Ongoro John", "ongoro john tadeo": "Ongoro John", "ongoro john tadeow": "Ongoro John",
+    "ong0ro john tadeo": "Ongoro John",
     "abdikadir osman": "Abdikadir Osman", "salma said": "Salma Said", "abdiwakil ali": "Abdiwakil Ali",
     "manow muse": "Manow Muse", "jama mohamed": "Jama Mohamed",
     "lobono peter": "Lobono Peter", "peter lobono": "Lobono Peter", "lino lotino": "Lino Lotino",
     "magnifique ndayisenga": "Magnifique Ndayisenga", "ndayisenga magnifique": "Magnifique Ndayisenga", "magnifique": "Magnifique Ndayisenga",
     "rose akii": "Rose Akii", "adams odwa peter": "Adams Odwa Peter",
+    "adams odwa": "Adams Odwa Peter", "adams owda": "Adams Odwa Peter",
+    "adam odwa": "Adams Odwa Peter", "adams odwal": "Adams Odwa Peter",
     "lokiro mazkil napao": "Lokiro Mazkil Napao", "lokiro mazkil": "Lokiro Mazkil Napao",
+    "lokiro": "Lokiro Mazkil Napao",
     "kwarto oliha": "Kwarto Oliha", "gabriella amani": "Gabriella Amani", "nyok jennifer": "Nyok Jennifer",
     "ohide akech viola": "Ohide Akech Viola",
+    "kennedy johnpapa": "Kennedy Johnpapa", "kennedy john papa": "Kennedy Johnpapa",
+    "johnpapa": "Kennedy Johnpapa", "john papa": "Kennedy Johnpapa",
+    "belick uwisero": "Belick Uwisero", "beluck uwisero": "Belick Uwisero",
+    "belicknuwisero": "Belick Uwisero", "blick uwisero": "Belick Uwisero",
+    "be lick uwisero": "Belick Uwisero", "belicm uwisero": "Belick Uwisero",
+    "bellick uwisero": "Belick Uwisero", "belock uwisero": "Belick Uwisero",
+    "bel9ck": "Belick Uwisero", "belick uwissro": "Belick Uwisero",
     "21 04 2026": MISSING, "kalobeyei reception centre": MISSING, "kalobeyei reception center": MISSING,
 }
 
@@ -3979,6 +3996,30 @@ elif section == "Data Quality":
         )
     else:
         st.success("No unmapped Kobo fields were detected against the current schema contract.")
+
+    st.markdown("#### Staff Name Harmonisation Audit")
+    st.caption(
+        "This reconciles each staff name submitted through Kobo with the canonical staff / CPV name used throughout the dashboard."
+    )
+    if {"staff_filling_form", "staff_clean"}.issubset(filtered.columns):
+        staff_audit_source = filtered[["staff_filling_form", "staff_clean"]].copy()
+        staff_audit_source["Kobo raw staff name"] = (
+            staff_audit_source["staff_filling_form"].fillna("<blank>").astype(str)
+        )
+        staff_audit_source["Dashboard staff / CPV"] = staff_audit_source["staff_clean"].astype(str)
+        staff_audit = (
+            staff_audit_source.groupby(
+                ["Kobo raw staff name", "Dashboard staff / CPV"], observed=True
+            )
+            .size()
+            .reset_index(name="Records")
+            .sort_values(["Dashboard staff / CPV", "Records"], ascending=[True, False])
+        )
+        render_table(
+            staff_audit.set_index(["Kobo raw staff name", "Dashboard staff / CPV"]),
+            "Raw Kobo Staff Names → Harmonised Staff / CPV Names",
+            "staff_name_harmonisation_audit",
+        )
 
     st.markdown("#### Gender Classification Audit")
     st.caption("This reconciles the exact Kobo response/code with the category used in every dashboard table and chart.")
