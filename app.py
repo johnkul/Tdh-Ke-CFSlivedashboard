@@ -626,6 +626,8 @@ def setting(name: str, default=None):
 STAFF_DEVICE_PASSWORD_INPUT_KEY = "staff_device_audit_password_input"
 STAFF_DEVICE_UNLOCK_UNTIL_KEY = "staff_device_audit_unlocked_until"
 STAFF_DEVICE_AUTH_ERROR_KEY = "staff_device_audit_auth_error"
+STAFF_DEVICE_SEARCH_INPUT_KEY = "staff_device_audit_search_input"
+STAFF_DEVICE_SEARCH_ACTIVE_KEY = "staff_device_audit_search_active"
 
 
 def configured_staff_device_password() -> str:
@@ -665,6 +667,21 @@ def lock_staff_device_audit() -> None:
     st.session_state.pop(STAFF_DEVICE_UNLOCK_UNTIL_KEY, None)
     st.session_state.pop(STAFF_DEVICE_PASSWORD_INPUT_KEY, None)
     st.session_state.pop(STAFF_DEVICE_AUTH_ERROR_KEY, None)
+    st.session_state.pop(STAFF_DEVICE_SEARCH_INPUT_KEY, None)
+    st.session_state.pop(STAFF_DEVICE_SEARCH_ACTIVE_KEY, None)
+
+
+def apply_staff_device_search() -> None:
+    """Apply the submitted search only after the user presses Search."""
+    st.session_state[STAFF_DEVICE_SEARCH_ACTIVE_KEY] = str(
+        st.session_state.get(STAFF_DEVICE_SEARCH_INPUT_KEY, "")
+    ).strip()
+
+
+def clear_staff_device_search() -> None:
+    """Restore the complete protected staff/device table."""
+    st.session_state[STAFF_DEVICE_SEARCH_INPUT_KEY] = ""
+    st.session_state[STAFF_DEVICE_SEARCH_ACTIVE_KEY] = ""
 
 
 def kobo_configured() -> bool:
@@ -3898,16 +3915,66 @@ elif section == "CPVs KPIs":
                 with d3:
                     st.metric("Device ID coverage", f"{coverage:.1%}")
 
-                st.markdown(
-                    '<div class="read-only-raw-table-marker" aria-hidden="true"></div>',
-                    unsafe_allow_html=True,
-                )
-                st.dataframe(
-                    device_summary,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=min(560, max(180, 38 * len(device_summary) + 42)),
-                )
+                st.markdown("**Search protected table**")
+                with st.form("staff_device_audit_search_form", clear_on_submit=False):
+                    search_input_col, search_button_col = st.columns([5, 1])
+                    with search_input_col:
+                        st.text_input(
+                            "Search staff or device metadata",
+                            key=STAFF_DEVICE_SEARCH_INPUT_KEY,
+                            placeholder="Enter staff name, device ID or Kobo account",
+                            label_visibility="collapsed",
+                        )
+                    with search_button_col:
+                        st.form_submit_button(
+                            "Search",
+                            type="primary",
+                            use_container_width=True,
+                            on_click=apply_staff_device_search,
+                        )
+
+                active_device_search = str(
+                    st.session_state.get(STAFF_DEVICE_SEARCH_ACTIVE_KEY, "")
+                ).strip()
+                displayed_device_summary = device_summary
+                if active_device_search:
+                    search_matches = device_summary.apply(
+                        lambda column: column.astype(str).str.contains(
+                            active_device_search,
+                            case=False,
+                            regex=False,
+                            na=False,
+                        )
+                    ).any(axis=1)
+                    displayed_device_summary = device_summary.loc[search_matches].copy()
+                    search_status_col, clear_search_col = st.columns([5, 1])
+                    with search_status_col:
+                        st.caption(
+                            f"{len(displayed_device_summary):,} matching row(s) for “{active_device_search}”."
+                        )
+                    with clear_search_col:
+                        st.button(
+                            "Clear search",
+                            key="staff_device_audit_clear_search_button",
+                            use_container_width=True,
+                            on_click=clear_staff_device_search,
+                        )
+
+                if displayed_device_summary.empty:
+                    st.info("No staff/device records match this search.")
+                else:
+                    st.markdown(
+                        '<div class="read-only-raw-table-marker" aria-hidden="true"></div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.dataframe(
+                        displayed_device_summary,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=min(
+                            560, max(180, 38 * len(displayed_device_summary) + 42)
+                        ),
+                    )
 
     staff_chart_source = filtered[
         ~filtered["staff_clean"].astype(str).isin([MISSING, REVIEW])
