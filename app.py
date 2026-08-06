@@ -2680,6 +2680,18 @@ SECTION_CATEGORY = {
     "Raw Data": "Record review and export",
 }
 
+SECTION_NAV_TONES = {
+    "Overview": ("#1d4ed8", "#dbeafe"),
+    "Monthly Trends": ("#7c3aed", "#ede9fe"),
+    "CPVs KPIs": ("#0e7490", "#cffafe"),
+    "Demographics": ("#0f766e", "#ccfbf1"),
+    "Games & Activities": ("#b45309", "#fef3c7"),
+    "Protection & Support": ("#be123c", "#ffe4e6"),
+    "Referrals": ("#047857", "#d1fae5"),
+    "Data Quality": ("#6d28d9", "#ede9fe"),
+    "Raw Data": ("#475569", "#e2e8f0"),
+}
+
 
 def section_label(option: str) -> str:
     meta = SECTION_META.get(option, {"icon": "📌", "label": option})
@@ -2691,12 +2703,13 @@ def nav_menu(options: List[str], key: str = "dashboard_section") -> str:
         st.session_state[key] = options[0]
 
     return st.selectbox(
-        "**Dashboard section**",
+        "Dashboard section",
         options,
         index=options.index(st.session_state[key]),
         key=key,
         format_func=section_label,
         help="Choose the analysis you need. Active filters remain in place.",
+        label_visibility="collapsed",
     )
 
 
@@ -3394,8 +3407,25 @@ st.sidebar.markdown(
 )
 
 with section_nav_slot:
-    st.markdown("<div class='sidebar-title'>Explore Dashboard</div>", unsafe_allow_html=True)
-    st.caption("Choose a section. Your filters remain active as you move between views.")
+    current_section = st.session_state.get("dashboard_section", SECTION_OPTIONS[0])
+    current_meta = SECTION_META.get(current_section, SECTION_META[SECTION_OPTIONS[0]])
+    nav_accent, nav_soft = SECTION_NAV_TONES.get(
+        current_section,
+        SECTION_NAV_TONES["Overview"],
+    )
+    st.markdown(
+        f"""
+        <div class="dashboard-section-nav-marker" style="--section-accent:{nav_accent};--section-soft:{nav_soft};">
+            <div class="dashboard-section-nav-icon">{current_meta['icon']}</div>
+            <div class="dashboard-section-nav-copy">
+                <div class="dashboard-section-nav-kicker">Explore dashboard</div>
+                <div class="dashboard-section-nav-title">Dashboard section</div>
+                <div class="dashboard-section-nav-help">Choose an analysis view; filters remain active.</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     section = nav_menu(SECTION_OPTIONS)
     active_meta = SECTION_META[section]
     st.caption(f"{SECTION_CATEGORY[section]} · {len(filtered):,} filtered records")

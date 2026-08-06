@@ -792,6 +792,83 @@ section[data-testid="stSidebar"] .stSelectbox label {
   font-weight: 900 !important;
 }
 
+/* Prominent, color-coded dashboard navigation inside the filter pane. */
+.dashboard-section-nav-marker {
+  display: flex;
+  align-items: center;
+  gap: 0.72rem;
+  margin: 0.25rem 0 0.55rem;
+  padding: 0.72rem 0.78rem;
+  border: 1px solid #bfdbfe;
+  border: 1px solid color-mix(in srgb, var(--section-accent) 30%, #ffffff);
+  border-left: 6px solid var(--section-accent);
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--section-soft) 0%, #ffffff 88%);
+  box-shadow: 0 7px 18px rgba(15, 23, 42, 0.075);
+}
+
+.dashboard-section-nav-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 2.45rem;
+  width: 2.45rem;
+  height: 2.45rem;
+  border-radius: 11px;
+  color: #ffffff;
+  background: var(--section-accent);
+  font-size: 1.15rem;
+  box-shadow: 0 5px 12px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 5px 12px color-mix(in srgb, var(--section-accent) 25%, transparent);
+}
+
+.dashboard-section-nav-copy {
+  min-width: 0;
+}
+
+.dashboard-section-nav-kicker {
+  color: var(--section-accent) !important;
+  font-size: 0.65rem;
+  font-weight: 950;
+  letter-spacing: 0.075em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.dashboard-section-nav-title {
+  margin-top: 0.12rem;
+  color: #0f172a !important;
+  font-size: 0.98rem;
+  font-weight: 950;
+  line-height: 1.15;
+}
+
+.dashboard-section-nav-help {
+  margin-top: 0.15rem;
+  color: #475569 !important;
+  font-size: 0.73rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]:has(.dashboard-section-nav-marker) [data-baseweb="select"] > div {
+  min-height: 2.75rem;
+  border: 2px solid #2563eb !important;
+  border-radius: 12px !important;
+  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.09), 0 5px 12px rgba(15, 23, 42, 0.055) !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]:has(.dashboard-section-nav-marker) [data-baseweb="select"] > div:hover {
+  border-color: #1d4ed8 !important;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.13), 0 7px 16px rgba(29, 78, 216, 0.1) !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]:has(.dashboard-section-nav-marker) [data-baseweb="select"] span,
+section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]:has(.dashboard-section-nav-marker) [data-baseweb="select"] input {
+  color: #172554 !important;
+  font-weight: 950 !important;
+}
+
 /* Sidebar typography */
 section[data-testid="stSidebar"] .stCaption,
 section[data-testid="stSidebar"] [data-testid="stCaptionContainer"],
