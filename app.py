@@ -3102,7 +3102,6 @@ def build_table_driven_narrative(
         staff_counts = counts(records, "staff_clean")
         if not staff_counts.empty:
             blocks.append(("Workload", f"{len(staff_counts):,} staff / CPVs are represented; {staff_counts.index[0]} leads with {int(staff_counts.iloc[0]):,} submissions ({int(staff_counts.iloc[0]) / total:.1%})."))
-        blocks.append(("Gender reach", gender_summary()))
         referral_by_staff = records.groupby("staff_clean", observed=False).agg(records=("record_id", "count"), referrals=("referral_made_clean", lambda s: s.astype(str).eq("Yes").sum()))
         referral_by_staff = referral_by_staff[referral_by_staff["records"] >= 5]
         if not referral_by_staff.empty:
@@ -3688,9 +3687,23 @@ elif section == "CPVs KPIs":
         cpv["First_Date"] = pd.to_datetime(cpv["First_Date"], errors="coerce").dt.strftime("%d %b %Y").fillna("")
         cpv["Last_Date"] = pd.to_datetime(cpv["Last_Date"], errors="coerce").dt.strftime("%d %b %Y").fillna("")
     render_table(cpv.rename(columns={"staff_clean": "Staff / CPV", "First_Visit_Yes": "First Visits", "Referrals_Yes": "Referrals", "Disability_Yes": "Disability Count", "Unique_CFS": "Unique CFS", "First_Date": "First Date", "Last_Date": "Last Date"}), "CPV Performance Summary", "cpv_summary", precision=1)
-    staff_chart = count_table(filtered, ["staff_clean", "gender_clean"])
+    staff_chart_source = filtered[
+        ~filtered["staff_clean"].astype(str).isin([MISSING, REVIEW])
+    ].copy()
+    staff_chart = count_table(staff_chart_source, ["staff_clean"])
     staff_chart = add_top_n_control(staff_chart, "staff_clean", "staff_chart", default=15)
-    bar_chart(staff_chart, "Count", "staff_clean", "gender_clean", "Staff submissions by gender", horizontal=True, height=700)
+    staff_chart = staff_chart.sort_values("Count", ascending=False)
+    st.caption(
+        "Ranked by total records submitted under the current filters; gender is not used in this workload view."
+    )
+    bar_chart(
+        staff_chart,
+        "Count",
+        "staff_clean",
+        title="Total submissions by staff / CPV",
+        horizontal=True,
+        height=max(420, min(760, len(staff_chart) * 38 + 120)),
+    )
 
 elif section == "Demographics":
     st.subheader("Demographics")
