@@ -52,7 +52,7 @@ DEVELOPER_LOGO_PATH = BASE_DIR / "assets" / "developer-logo.png"
 CSS_PATH = BASE_DIR / "assets" / "styles.css"
 APP_VERSION = "Version 1.1 · Kobo live data · August 2026"
 SCHEMA_CONTRACT_VERSION = "cfs-schema-2026.08"
-TABLE_RENDER_CACHE_VERSION = "compact-header-download-v4"
+TABLE_RENDER_CACHE_VERSION = "adaptive-wrapped-tables-v5"
 # Keep prepared data hot for normal navigation. Administrators can bypass this
 # window at any time with “Fetch latest Kobo data”.
 KOBO_CACHE_TTL_SECONDS = 1800
@@ -2347,6 +2347,28 @@ def build_professional_table_html(
             numeric_cols.append(col)
             max_values[col] = max(float(numeric.max()), 0.0)
 
+    # Tables with four or fewer columns should fit the available pane. Allocate
+    # most of the width to descriptive text and compact widths to numeric
+    # measures, then wrap long responses instead of forcing horizontal scroll.
+    fit_table_to_pane = col_count <= 4
+    table_css_class = "fit-table" if fit_table_to_pane else "wide-table"
+    colgroup = ""
+    if fit_table_to_pane and col_count:
+        numeric_count = sum(col in numeric_cols for col in display.columns)
+        text_count = col_count - numeric_count
+        if not text_count or not numeric_count:
+            widths = [100 / col_count] * col_count
+        else:
+            numeric_width = 16 if numeric_count == 1 else 14
+            text_width = (100 - numeric_width * numeric_count) / text_count
+            widths = [
+                numeric_width if col in numeric_cols else text_width
+                for col in display.columns
+            ]
+        colgroup = "<colgroup>" + "".join(
+            f'<col style="width:{width:.2f}%">' for width in widths
+        ) + "</colgroup>"
+
     thead = "".join(f"<th>{html_lib.escape(str(col))}</th>" for col in display.columns)
 
     body_rows = []
@@ -2383,15 +2405,16 @@ def build_professional_table_html(
     # card itself was much shorter than the reserved Streamlit component.
     visible_rows = max(1, min(row_count, 12))
     table_header_height = 43
-    row_height = 41
-    horizontal_scroll_allowance = 16
+    row_height = 56 if fit_table_to_pane else 41
+    horizontal_scroll_allowance = 0 if fit_table_to_pane else 16
     card_header_height = 76
-    scroll_height = (
+    desired_scroll_height = (
         table_header_height
         + visible_rows * row_height
         + horizontal_scroll_allowance
     )
-    height = min(760, card_header_height + scroll_height + 4)
+    height = min(760, card_header_height + desired_scroll_height + 4)
+    scroll_height = max(120, height - card_header_height - 4)
 
     html_doc = f"""
     <!doctype html>
@@ -2436,6 +2459,12 @@ def build_professional_table_html(
         .table-download-icon {{ font-size:1rem; line-height:1; }}
         .table-scroll {{ max-height:{scroll_height}px; overflow:auto; background:#fff; }}
         table {{ width:max-content; min-width:100%; table-layout:auto; border-collapse:separate; border-spacing:0; font-size:.86rem; line-height:1.35; }}
+        table.fit-table {{ width:100%; min-width:100%; table-layout:fixed; }}
+        table.fit-table thead th,
+        table.fit-table tbody td {{
+          white-space:normal; overflow-wrap:anywhere; word-break:normal;
+        }}
+        table.fit-table tbody td.first-col {{ min-width:0; }}
         thead th {{
           position:sticky; top:0; z-index:5; padding:11px 13px; text-align:left; white-space:nowrap;
           color:#fff; font-weight:950; background:linear-gradient(180deg,#1e40af,#172554);
@@ -2482,7 +2511,8 @@ def build_professional_table_html(
           </a>
         </div>
         <div class="table-scroll">
-          <table>
+          <table class="{table_css_class}">
+            {colgroup}
             <thead><tr>{thead}</tr></thead>
             <tbody>{tbody}</tbody>
           </table>
