@@ -10,8 +10,8 @@ Usage:
 
 Data source:
     Configure KOBO_TOKEN and KOBO_ASSET_UID in Streamlit secrets. The app reads
-    live submissions from Kobo KPI API v2. A local Excel/CSV remains an optional
-    fallback when Kobo credentials are not configured.
+    historical Excel snapshots plus live Kobo KPI v2 submissions. Local-only
+    mode remains available and is explicitly labeled when live data is absent.
 """
 
 from __future__ import annotations
@@ -35,6 +35,10 @@ import plotly.express as px
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+from cfs_sources import (
+    VERSION as COMBINED_SOURCE_VERSION, INTERNAL_FIELDS, PUBLIC_SOURCE_FIELDS,
+    archive_signatures, file_signature, load_archive, normalize_source, reconcile,
+)
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -60,7 +64,12 @@ KOBO_CACHE_TTL_SECONDS = 1800
 KOBO_REQUEST_TIMEOUT_SECONDS = 45
 PREPARED_DATA_PATH = DATA_DIR / "cfs_dashboard_prepared.pkl"
 PREPARED_CACHE_PATH = BASE_DIR / ".cfs_dashboard_prepared_cache.pkl"
-PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v22-single-name-harmonization"
+PREPARED_CACHE_VERSION = "cfs-dashboard-prepared-v23-historical-live"
+HISTORICAL_PRIMARY_PATH = DATA_DIR / "historical" / "CFS_QUESTIONNAIRE_Tdh_Kenya_T1.xlsx"
+HISTORICAL_SECONDARY_PATHS = (
+    DATA_DIR / "CFS_QUESTIONNAIRE_-_T2.xlsx",
+    DATA_DIR / "CFS_QUESTIONNAIRE_Tdh_Kenya_T1.xlsx",
+)
 
 RAW_TO_TRANSFORMED_COLUMNS = {
     # System / metadata columns
@@ -215,6 +224,7 @@ PII_COLUMNS = {
     "gps_location", "exact_registered_location", "section_block_residence",
     "uuid", "root_uuid", "id", "notes", "tags", "submitted_by",
 }
+PII_COLUMNS.update(INTERNAL_FIELDS - set(PUBLIC_SOURCE_FIELDS))
 
 ISSUE_COLUMNS = {
     "issue_new_arrival_lack_of_card": "New arrival / Lack of card",
@@ -1563,8 +1573,10 @@ def df_signature(df: pd.DataFrame) -> str:
 
 def privacy_safe_export(data: pd.DataFrame) -> pd.DataFrame:
     """Return an export frame with direct identifiers removed."""
-    sensitive = [column for column in data.columns if column in PII_COLUMNS]
-    return data.drop(columns=sensitive, errors="ignore").copy()
+    sensitive = [column for column in data.columns if column in PII_COLUMNS or str(column).startswith("__")]
+    public = data.drop(columns=sensitive, errors="ignore").copy()
+    public.attrs.pop("private_reconciliation_audit", None)
+    return public
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
@@ -1670,6 +1682,7 @@ def harmonize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
     out.attrs["schema_contract_version"] = SCHEMA_CONTRACT_VERSION
     out.attrs["unmapped_source_columns"] = sorted(
         str(column) for column in out.columns if str(column) not in ANALYSIS_COLUMN_NAMES
+        and str(column) not in INTERNAL_FIELDS and not str(column).startswith("__")
     )
 
     return out
@@ -3280,6 +3293,120 @@ def schema_readiness_table(data: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(rows)
     return out.sort_values(["Status", "Analysis column"], ascending=[True, True]).reset_index(drop=True)
 
+@st.cache_resource(show_spinner=False, ttl=KOBO_CACHE_TTL_SECONDS, max_entries=4)
+def load_combined_dashboard(base_url, asset_uid, token, signatures, archive_timezone="UTC", refresh_nonce=0,
+                            use_live=True, version=COMBINED_SOURCE_VERSION, refresh_window=0):
+    """Reconcile raw sources before running the established calculations once."""
+    del version, refresh_window
+    frames, archive_errors = [], []
+    primary_available = False
+    for position, signature in enumerate(signatures):
+        source_file_label = f"{'Primary' if position == 0 else 'Secondary'} / {Path(signature[0]).name}"
+        try:
+            raw = load_archive(signature)
+            normalized = normalize_source(raw, "Historical archive", source_file_label,
+                                          RAW_TO_TRANSFORMED_COLUMNS, norm_text, ANALYSIS_COLUMN_NAMES, archive_timezone,
+                                          yes_no_parser=yes_no)
+        except Exception as error:
+            archive_errors.append({"file": source_file_label, "error_type": type(error).__name__})
+        else:
+            primary_available = primary_available or position == 0
+            frames.append(normalized)
+    fetched_at, pages = None, 0
+    if use_live:
+        raw_live, fetched_at, pages = fetch_kobo_submissions(base_url, asset_uid, token, refresh_nonce)
+        frames.append(normalize_source(raw_live, "Live Kobo", "Kobo API", RAW_TO_TRANSFORMED_COLUMNS,
+                                       norm_text, ANALYSIS_COLUMN_NAMES, yes_no_parser=yes_no))
+    elif not frames:
+        raise RuntimeError("No readable historical or local archive was found.")
+    combined, metadata = reconcile(frames)
+    private_audit = combined.attrs.pop("private_reconciliation_audit", [])
+    # Preserve prepare_data's numeric record_id and all four related tables.
+    df, issues, supports, games = prepare_data(combined)
+    for long_frame in (issues, supports, games):
+        for field in PUBLIC_SOURCE_FIELDS:
+            long_frame[field] = long_frame["record_id"].map(df.set_index("record_id")[field])
+    dates = pd.to_datetime(df["date"], errors="coerce")
+    metadata.update({
+        "mode": "Historical archive + Live Kobo" if use_live and metadata["historical_rows"] else
+                ("Live Kobo only" if use_live else "Historical archive only"),
+        "archive_errors": archive_errors, "primary_archive_available": primary_available,
+        "dashboard_rows": len(df), "excluded_rows": len(combined) - len(df),
+        "earliest_reporting_date": dates.min().isoformat() if dates.notna().any() else None,
+        "latest_reporting_date": dates.max().isoformat() if dates.notna().any() else None,
+        "fetched_at": fetched_at or datetime.now(timezone.utc).isoformat(), "api_pages": pages,
+    })
+    for frame in (df, issues, supports, games):
+        frame.attrs["source_metadata"] = metadata
+    df.attrs["private_reconciliation_audit"] = private_audit
+    assert df["record_id"].is_unique
+    for frame in (issues, supports, games):
+        assert set(frame["record_id"]).issubset(set(df["record_id"]))
+    return len(combined), df, issues, supports, games, metadata["fetched_at"], pages
+
+
+def combined_session_snapshot(context, signatures, archive_timezone, refresh_nonce, use_live):
+    """Retain a complete same-source snapshot after a failed refresh."""
+    source_identity = (*context[:2], hashlib.sha256(context[2].encode()).hexdigest(), use_live)
+    refresh_window = int(time.time() // KOBO_CACHE_TTL_SECONDS)
+    identity = (source_identity, signatures, archive_timezone, refresh_nonce, COMBINED_SOURCE_VERSION, refresh_window)
+    saved = st.session_state.get("cfs_combined_snapshot")
+    if saved is not None and saved[0][0] != source_identity:
+        saved = None
+        st.session_state.pop("cfs_combined_snapshot", None)
+    if saved is None or saved[0] != identity:
+        try:
+            result = load_combined_dashboard(*context, signatures, archive_timezone, refresh_nonce, use_live,
+                                            COMBINED_SOURCE_VERSION, refresh_window)
+        except Exception:
+            if saved is None:
+                raise
+            st.session_state["cfs_source_refresh_failed"] = True
+        else:
+            saved = (identity, result)
+            st.session_state["cfs_combined_snapshot"] = saved
+            st.session_state.pop("cfs_source_refresh_failed", None)
+    return saved[1]
+
+
+def render_reconciliation(metadata):
+    """Routine diagnostics live inside this collapsed sidebar panel."""
+    st.caption(metadata.get("mode", "Unknown"))
+    st.dataframe(pd.DataFrame([
+        {"Measure": "Historical rows received", "Rows": metadata["historical_rows"]},
+        {"Measure": "Live Kobo rows received", "Rows": metadata["live_rows"]},
+        {"Measure": "Equivalent duplicates removed", "Rows": metadata["duplicates_removed"]},
+        {"Measure": "Combined rows / versions retained", "Rows": metadata["combined_rows"]},
+        {"Measure": "Conflicting versions retained", "Rows": metadata["conflict_rows"]},
+        {"Measure": "Dashboard rows (existing consent rule)", "Rows": metadata["dashboard_rows"]},
+        {"Measure": "Excluded by existing consent rule", "Rows": metadata["excluded_rows"]},
+    ]), hide_index=True, width="stretch")
+    st.caption("Historical + live − equivalent duplicates = combined rows. Retained versions are not necessarily unique original submissions.")
+    st.write("Historical input by file:", metadata["per_file_rows"])
+    st.write("Retained source ownership:", metadata["source_breakdown"])
+    st.write("Source membership:", metadata["source_membership_breakdown"])
+    st.caption(f"Distinct version UUIDs: {metadata['distinct_uuids']:,}; distinct root UUIDs: {metadata['distinct_root_uuids']:,}.")
+    st.caption(f"Equivalent UUID groups: {metadata['duplicate_uuid_groups']:,}; root revision groups: {metadata['root_revision_groups']:,}; ID collision groups: {metadata['id_collision_groups']:,}.")
+    st.caption(f"Unresolved identities: {metadata['identity_unresolved_rows']:,}; possible duplicates without UUID: {metadata['possible_duplicates_without_uuid']:,} (retained).")
+    st.caption(f"Submission timestamps (UTC): {metadata.get('earliest_submission_utc')} to {metadata.get('latest_submission_utc')}; missing dates: {metadata['missing_submission_dates']:,}.")
+    st.caption(f"Reporting dates (today first): {metadata.get('earliest_reporting_date')} to {metadata.get('latest_reporting_date')}.")
+    for diagnostic in metadata.get("source_diagnostics", []):
+        if not diagnostic.get("rows"):
+            continue
+        st.markdown(f"**{diagnostic['file']}**")
+        if diagnostic["missing_fields"] or diagnostic["extra_fields"] or diagnostic["conversion_issues"] or diagnostic["alias_conflicts"]:
+            st.warning("This source differs from the expected schema; missing values stay empty and alternate values remain private.")
+        st.write("Missing fields:", diagnostic["missing_fields"])
+        st.write("Extra fields:", diagnostic["extra_fields"])
+        st.write("Source data types:", diagnostic["original_types"])
+        st.write("Parsing issues:", diagnostic["conversion_issues"])
+        st.write("Contradictory aliases:", diagnostic["alias_conflicts"])
+        if diagnostic["timezone_note"]:
+            st.warning(diagnostic["timezone_note"])
+    if metadata.get("archive_errors"):
+        st.write("Unavailable archives:", metadata["archive_errors"])
+
+
 # -----------------------------------------------------------------------------
 # Streamlit app
 # -----------------------------------------------------------------------------
@@ -3316,52 +3443,68 @@ if st.sidebar.button("↺ Reset view", use_container_width=True, help="Clear act
             st.session_state.pop(state_key, None)
     st.rerun()
 
-data_path = resolve_data_path()
-source_label = ""
-source_modified = None
-source_mode = "KoboToolbox API" if kobo_configured() else "Local file fallback"
-source_fingerprint = "api-live"
-source_stat = None
-page_count = 0
-
-if "kobo_refresh_nonce" not in st.session_state:
-    st.session_state.kobo_refresh_nonce = 0
-
+data_path = Path(os.environ.get("CFS_DATA_PATH") or HISTORICAL_PRIMARY_PATH)
+secondary_paths = list(HISTORICAL_SECONDARY_PATHS)
+# Retain the old local fallback only when none of the explicit archives exists.
+if not any(path.exists() for path in [data_path, *secondary_paths]):
+    fallback_path = resolve_data_path()
+    if fallback_path.exists():
+        secondary_paths.append(fallback_path)
+signatures = archive_signatures(data_path, secondary_paths)
+archive_timezone = str(setting("ARCHIVE_SUBMISSION_TIMEZONE", "UTC"))
+st.session_state.setdefault("kobo_refresh_nonce", 0)
+st.session_state.setdefault("cfs_archive_only_requested", False)
+uses_live_data = kobo_configured() and not st.session_state.cfs_archive_only_requested
+context = (str(setting("KOBO_BASE_URL", "https://kf.kobotoolbox.org")).rstrip("/"),
+           str(setting("KOBO_ASSET_UID", "")), str(setting("KOBO_TOKEN", "")))
 load_started_at = time.perf_counter()
-startup_status = st.status("Loading prepared dashboard data…", expanded=False)
+startup_status = st.status("Loading combined historical and live dashboard data…", expanded=False)
 try:
-    if kobo_configured():
-        startup_status.update(label="Connecting to Kobo and loading cached submissions…", state="running")
-        kobo_base_url = str(setting("KOBO_BASE_URL", "https://kf.kobotoolbox.org"))
-        kobo_asset_uid = str(setting("KOBO_ASSET_UID"))
-        kobo_token = str(setting("KOBO_TOKEN"))
-        raw_count, df, issue_long, support_long, game_long, fetched_at, page_count = load_kobo_dashboard_data(
-            kobo_base_url, kobo_asset_uid, kobo_token, st.session_state.kobo_refresh_nonce
-        )
-        fetched_dt = pd.to_datetime(fetched_at, utc=True).tz_convert("Africa/Nairobi")
-        source_modified = fetched_dt.strftime("%d %b %Y %H:%M EAT")
-        source_label = f"Kobo asset {kobo_asset_uid}"
-    elif data_path.exists():
-        startup_status.update(label="Loading cached local dashboard data…", state="running")
-        source_stat = data_path.stat()
-        modified_time = source_stat.st_mtime
-        source_label = f"Source file: {data_path}"
-        source_modified = time.strftime("%d %b %Y %H:%M", time.localtime(modified_time))
-        source_fingerprint = source_content_fingerprint(str(data_path), source_stat.st_size, source_stat.st_mtime_ns)
-        raw_count, df, issue_long, support_long, game_long = load_dashboard_data_cached(str(data_path), source_fingerprint)
-    else:
-        st.error("Kobo is not configured and no fallback data file was found.")
-        st.info("Add KOBO_TOKEN and KOBO_ASSET_UID to .streamlit/secrets.toml. See README_KOBO.md.")
-        st.stop()
-except requests.RequestException as exc:
-    startup_status.update(label="Kobo connection failed", state="error")
-    st.error(f"Kobo could not be reached: {exc}")
-    st.info("The app did not expose your token. Check connectivity, Kobo server URL, and project permissions.")
+    raw_count, df, issue_long, support_long, game_long, fetched_at, page_count = combined_session_snapshot(
+        context, signatures, archive_timezone, st.session_state.kobo_refresh_nonce, uses_live_data
+    )
+except Exception:
+    startup_status.update(label="Dashboard sources could not be loaded completely", state="error")
+    st.error("The dashboard could not load a complete dataset from the selected sources.")
+    st.info("Check source files, archive timezone, Kobo server, asset UID, token permissions and network. Raw responses/credentials are not displayed.")
+    readable_archive = False
+    for signature in signatures:
+        try:
+            load_archive(signature)
+        except Exception:
+            continue
+        readable_archive = True
+        break
+    if uses_live_data and readable_archive:
+        st.warning("Archive-only mode excludes current Kobo submissions and is incomplete.")
+        if st.button("Use historical archive only", key="cfs_choose_archive_only"):
+            st.session_state.cfs_archive_only_requested = True
+            st.rerun()
+    elif kobo_configured() and st.button("Retry live Kobo", key="cfs_retry_live_error"):
+        st.session_state.cfs_archive_only_requested = False
+        st.session_state.kobo_refresh_nonce += 1
+        st.rerun()
     st.stop()
-except Exception as exc:
-    startup_status.update(label="Dashboard preparation failed", state="error")
-    st.error(f"The dashboard data could not be loaded/prepared: {exc}")
-    st.stop()
+source_metadata = df.attrs.get("source_metadata", {})
+source_mode = source_metadata.get("mode", "Unknown")
+source_label = source_mode
+source_fingerprint = source_metadata.get("fingerprint", "")
+source_stat = None
+source_modified = pd.to_datetime(fetched_at, utc=True).tz_convert("Africa/Nairobi").strftime("%d %b %Y %H:%M EAT")
+if st.session_state.get("cfs_source_refresh_failed"):
+    st.warning(f"Refresh failed. Showing the last complete combined snapshot loaded at {source_modified}; data may be out of date.")
+if not uses_live_data:
+    st.warning("Historical archive only — current Kobo submissions are unavailable in this view.")
+    if kobo_configured() and st.button("Retry live Kobo", key="cfs_retry_live"):
+        st.session_state.cfs_archive_only_requested = False
+        st.session_state.kobo_refresh_nonce += 1
+        st.rerun()
+if not source_metadata.get("primary_archive_available"):
+    st.warning("The supplied primary historical archive is missing or unreadable. Any available older snapshots and live Kobo are shown; historical coverage may be incomplete.")
+if source_metadata.get("conflict_rows"):
+    st.warning(f"{source_metadata['conflict_rows']:,} conflicting/revision rows are retained. Counts may include multiple versions of one submission. Review Historical + live reconciliation.")
+with st.sidebar.expander("Historical + live reconciliation", expanded=False):
+    render_reconciliation(source_metadata)
 
 load_elapsed_seconds = time.perf_counter() - load_started_at
 startup_status.update(label=f"Dashboard data ready in {load_elapsed_seconds:.1f} seconds", state="complete")
@@ -3427,8 +3570,8 @@ st.caption(f"Data source: {source_mode} · Last fetched/loaded: {source_modified
 
 with st.sidebar.expander("ℹ Live data & performance", expanded=False):
     st.caption(f"Source: {source_label}")
-    st.caption(f"Refresh window: {KOBO_CACHE_TTL_SECONDS} seconds" if kobo_configured() else "Refresh mode: file change")
-    if kobo_configured():
+    st.caption(f"Refresh window: {KOBO_CACHE_TTL_SECONDS} seconds" if uses_live_data else "Refresh mode: file change")
+    if uses_live_data:
         st.caption(f"API pages fetched: {page_count:,}")
     elif source_stat is not None:
         st.caption(f"Workbook size: {source_stat.st_size / (1024 * 1024):.2f} MB")
@@ -3436,8 +3579,8 @@ with st.sidebar.expander("ℹ Live data & performance", expanded=False):
     st.caption(f"Load/cache lookup: {load_elapsed_seconds:.3f} seconds")
     st.caption(f"Raw records: {raw_count:,}")
     st.caption(f"Analysable records: {len(df):,}")
-    if st.button("Fetch latest Kobo data" if kobo_configured() else "Refresh data cache", key="admin_refresh_data_cache", use_container_width=True):
-        if kobo_configured():
+    if st.button("Fetch latest Kobo data" if uses_live_data else "Refresh data cache", key="admin_refresh_data_cache", use_container_width=True):
+        if uses_live_data:
             st.session_state.kobo_refresh_nonce += 1
             fetch_kobo_submissions.clear()
             load_kobo_dashboard_data.clear()
@@ -3446,13 +3589,9 @@ with st.sidebar.expander("ℹ Live data & performance", expanded=False):
             fetch_kobo_location_choice_maps.clear()
             fetch_kobo_cfs_choice_maps.clear()
         else:
-            source_content_fingerprint.clear()
-            load_dashboard_data_cached.clear()
-            read_file_cached.clear()
-            try:
-                PREPARED_CACHE_PATH.unlink(missing_ok=True)
-            except Exception:
-                pass
+            load_archive.clear()
+            st.session_state.kobo_refresh_nonce += 1
+        load_combined_dashboard.clear()
         st.rerun()
 
 # Reserve a persistent navigation position above the filters. The container is
@@ -4250,6 +4389,13 @@ elif section == "Referrals":
 elif section == "Data Quality":
     st.subheader("Data Quality & Harmonisation Review")
     st.info("Records where consent was 'No' are excluded because they typically contain skipped form fields.")
+    with st.expander("Retained submission conflicts", expanded=False):
+        st.caption("Eligible conflicting/revision rows across the full snapshot. All versions are retained; review original source records before resolving them.")
+        conflict_columns = [c for c in ("record_id", "data_source", "source_membership", "date", "staff_clean",
+                                       "cfs_clean", "gender_clean", "age_group", "submission_conflict") if c in df]
+        conflicts = df.loc[df["submission_conflict"].fillna(False).astype(bool), conflict_columns]
+        st.caption(f"{len(conflicts):,} retained eligible rows need source reconciliation.")
+        st.dataframe(conflicts, hide_index=True, width="stretch")
 
     st.markdown("#### Analysis Schema Readiness")
     st.caption("This checks whether the transformed analysis-column structure required by the dashboard is present after raw-to-analysis column harmonisation.")
@@ -4386,7 +4532,7 @@ elif section == "Data Quality":
 elif section == "Raw Data":
     st.subheader("Filtered Raw Data")
     display_cols = [
-        "record_id", "date", "settlement_clean", "location_clean", "cfs_clean", "staff_clean", "gender_clean", "age_clean", "age_group", "disability_status_clean", "first_visit_source_raw", "first_visit_clean", "referral_made_clean", "issues_combined", "support_combined", "games_played_clean", "take5_integrated_clean",
+        "record_id", "data_source", "source_membership", "submission_conflict", "identity_unresolved", "date", "settlement_clean", "location_clean", "cfs_clean", "staff_clean", "gender_clean", "age_clean", "age_group", "disability_status_clean", "first_visit_source_raw", "first_visit_clean", "referral_made_clean", "issues_combined", "support_combined", "games_played_clean", "take5_integrated_clean",
     ]
     display_cols = [c for c in display_cols if c in filtered.columns]
     st.caption(

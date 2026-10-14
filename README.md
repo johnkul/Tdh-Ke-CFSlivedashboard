@@ -1,6 +1,8 @@
 # Tdh Kenya CFS Dashboard — Kobo live setup
 
-The supplied `app.py` reads submissions from the KoboToolbox KPI API v2. It caches API responses for 60 seconds, follows all pagination links, and provides a **Fetch latest Kobo data** button. The existing Excel/CSV loader remains an automatic fallback only when Kobo credentials are not configured.
+The updated `app.py` combines historical Excel snapshots with submissions from the KoboToolbox KPI API v2, then runs the existing dashboard calculations. Live responses use the existing 30-minute cache, all pagination links are followed, and **Fetch latest Kobo data** remains available. No archive records are uploaded to Kobo.
+
+See [CFS_ARCHIVE_INTEGRATION.md](CFS_ARCHIVE_INTEGRATION.md) for archive placement, reconciliation rules, complete source files, validation commands, private-repository deployment and fallback behavior. The new combined loader bypasses the old local-only prepared pickle caches.
 
 ## 1. Place the files
 
