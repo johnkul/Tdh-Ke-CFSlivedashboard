@@ -1,0 +1,11 @@
+.streamlit/secrets.toml
+.venv/
+.vs/
+.vscode/
+__pycache__/
+*.py[cod]
+data/historical/*.xlsx
+data/historical/*.csv
+data/~$*
+*.pkl
+validation-report*.json
