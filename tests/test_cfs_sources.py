@@ -188,6 +188,27 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("submission_key",public)
         self.assertNotIn("private_reconciliation_audit",public.attrs)
 
+    def test_render_frame_does_not_copy_audit_or_mutate_snapshot(self):
+        class AuditMustStayInCache:
+            def __deepcopy__(self, memo):
+                raise AssertionError("Private audit copied during page rendering")
+        snapshot = pd.DataFrame({"record_id": [1], "child_age": [10]})
+        snapshot.attrs["private_reconciliation_audit"] = AuditMustStayInCache()
+        view = self.app["dashboard_render_frame"](snapshot)
+        self.assertFalse(view.attrs)
+        view.loc[0, "child_age"] = 12
+        self.assertEqual(snapshot.to_numpy()[0, 1], 10)
+        self.assertIn("private_reconciliation_audit", snapshot.attrs)
+
+    def test_final_display_rules_match_previous_per_rerun_rules(self):
+        raw = pd.DataFrame([sample(child_gender="Female"), sample(id=2, uuid=B, child_age=17)])
+        records = self.app["prepare_data"](raw)[0]
+        finalized = self.app["finalize_dashboard_records"](records.copy())
+        again = self.app["finalize_dashboard_records"](finalized.copy())
+        pd.testing.assert_frame_equal(finalized, again)
+        self.assertEqual(list(finalized["record_id"]), list(records["record_id"]))
+        self.assertEqual(len(finalized), len(records))
+
     def test_failed_refresh_preserves_same_source_snapshot(self):
         state={}
         original=self.app["load_combined_dashboard"]

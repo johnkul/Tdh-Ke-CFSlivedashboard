@@ -39,6 +39,7 @@ from cfs_sources import (
     VERSION as COMBINED_SOURCE_VERSION, INTERNAL_FIELDS, PUBLIC_SOURCE_FIELDS,
     archive_signatures, file_signature, load_archive, normalize_source, reconcile,
 )
+COMBINED_SOURCE_VERSION = f"{COMBINED_SOURCE_VERSION}-render-v2"
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -3293,6 +3294,69 @@ def schema_readiness_table(data: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(rows)
     return out.sort_values(["Status", "Analysis column"], ascending=[True, True]).reset_index(drop=True)
 
+def finalize_dashboard_records(df):
+    """Apply the established display rules once per combined source snapshot."""
+    if not df.empty:
+        # Re-enforce the reporting-date contract after every cache load so a
+        # previously prepared dataframe cannot retain the manual-entry date.
+        if "entered_date" not in df.columns:
+            df["entered_date"] = pd.to_datetime(df.get("date"), errors="coerce").dt.normalize()
+        df["today_date"] = pd.to_datetime(df.get("today"), errors="coerce").dt.normalize()
+        cached_submission_date = (
+            pd.to_datetime(df.get("submission_time"), errors="coerce", utc=True)
+            .dt.tz_convert(None)
+            .dt.normalize()
+        )
+        df["date"] = df["today_date"].combine_first(cached_submission_date).combine_first(df["entered_date"])
+        df["month"] = df["date"].dt.to_period("M").astype("string")
+        df["date_source"] = pd.Series("Entered date fallback", index=df.index, dtype="string")
+        df.loc[cached_submission_date.notna(), "date_source"] = "Submission time fallback"
+        df.loc[df["today_date"].notna(), "date_source"] = "Kobo today"
+        if "age_clean" in df.columns:
+            enforced_age_groups = df["age_clean"].map(age_group)
+        elif "child_age" in df.columns:
+            enforced_age_groups = df["child_age"].map(age_group)
+        else:
+            enforced_age_groups = pd.Series(MISSING, index=df.index)
+        df["age_group"] = pd.Categorical(
+            enforced_age_groups.astype(str),
+            categories=AGE_GROUP_ORDER,
+            ordered=True,
+        )
+        if "camp_of_information_seeking" in df.columns:
+            df["settlement_clean"] = df["camp_of_information_seeking"].map(clean_settlement)
+        # Enforce location labels after every load, including data returned from an
+        # older in-memory/persisted prepared cache. This prevents XML codes and
+        # legacy labels from resurfacing in filters without requiring a data reload.
+        if "location_raw" in df.columns:
+            location_source = df["location_raw"].where(
+                df["location_raw"].notna() & df["location_raw"].astype(str).str.strip().ne(""),
+                df.get("location_clean", pd.Series(MISSING, index=df.index)),
+            )
+        else:
+            location_source = df.get("location_clean", pd.Series(MISSING, index=df.index))
+        df["location_clean"] = location_source.map(clean_location)
+        if "cfs_raw" in df.columns:
+            cfs_source = df["cfs_raw"].where(
+                df["cfs_raw"].notna() & df["cfs_raw"].astype(str).str.strip().ne(""),
+                df.get("cfs_clean", pd.Series(MISSING, index=df.index)),
+            )
+        else:
+            cfs_source = df.get("cfs_clean", pd.Series(MISSING, index=df.index))
+        df["cfs_clean"] = cfs_source.map(clean_cfs)
+    return df
+
+
+def dashboard_render_frame(snapshot):
+    """Copy values for one rerun without deep-copying the private audit.
+
+    The cached snapshot retains its complete audit. Constructing from a frame
+    deliberately omits attrs; .copy() would recursively duplicate those attrs.
+    An independent value copy prevents page edits changing the shared cache.
+    """
+    return pd.DataFrame(snapshot, copy=True)
+
+
 @st.cache_resource(show_spinner=False, ttl=KOBO_CACHE_TTL_SECONDS, max_entries=4)
 def load_combined_dashboard(base_url, asset_uid, token, signatures, archive_timezone="UTC", refresh_nonce=0,
                             use_live=True, version=COMBINED_SOURCE_VERSION, refresh_window=0):
@@ -3323,6 +3387,7 @@ def load_combined_dashboard(base_url, asset_uid, token, signatures, archive_time
     private_audit = combined.attrs.pop("private_reconciliation_audit", [])
     # Preserve prepare_data's numeric record_id and all four related tables.
     df, issues, supports, games = prepare_data(combined)
+    df = finalize_dashboard_records(df)
     for long_frame in (issues, supports, games):
         for field in PUBLIC_SOURCE_FIELDS:
             long_frame[field] = long_frame["record_id"].map(df.set_index("record_id")[field])
@@ -3486,6 +3551,8 @@ except Exception:
         st.rerun()
     st.stop()
 source_metadata = df.attrs.get("source_metadata", {})
+# Page filters must not carry the large private audit or mutate cached frames.
+df = dashboard_render_frame(df)
 source_mode = source_metadata.get("mode", "Unknown")
 source_label = source_mode
 source_fingerprint = source_metadata.get("fingerprint", "")
@@ -3509,58 +3576,6 @@ with st.sidebar.expander("Historical + live reconciliation", expanded=False):
 load_elapsed_seconds = time.perf_counter() - load_started_at
 startup_status.update(label=f"Dashboard data ready in {load_elapsed_seconds:.1f} seconds", state="complete")
 
-# Enforce the approved age taxonomy after every load, including loads served
-# from a prepared pickle or Streamlit's persisted cache. This prevents legacy
-# age-band labels from resurfacing in any filter, table, chart, or narrative,
-# even if an older transformed frame is encountered.
-if not df.empty:
-    # Re-enforce the reporting-date contract after every cache load so a
-    # previously prepared dataframe cannot retain the manual-entry date.
-    if "entered_date" not in df.columns:
-        df["entered_date"] = pd.to_datetime(df.get("date"), errors="coerce").dt.normalize()
-    df["today_date"] = pd.to_datetime(df.get("today"), errors="coerce").dt.normalize()
-    cached_submission_date = (
-        pd.to_datetime(df.get("submission_time"), errors="coerce", utc=True)
-        .dt.tz_convert(None)
-        .dt.normalize()
-    )
-    df["date"] = df["today_date"].combine_first(cached_submission_date).combine_first(df["entered_date"])
-    df["month"] = df["date"].dt.to_period("M").astype("string")
-    df["date_source"] = pd.Series("Entered date fallback", index=df.index, dtype="string")
-    df.loc[cached_submission_date.notna(), "date_source"] = "Submission time fallback"
-    df.loc[df["today_date"].notna(), "date_source"] = "Kobo today"
-    if "age_clean" in df.columns:
-        enforced_age_groups = df["age_clean"].map(age_group)
-    elif "child_age" in df.columns:
-        enforced_age_groups = df["child_age"].map(age_group)
-    else:
-        enforced_age_groups = pd.Series(MISSING, index=df.index)
-    df["age_group"] = pd.Categorical(
-        enforced_age_groups.astype(str),
-        categories=AGE_GROUP_ORDER,
-        ordered=True,
-    )
-    if "camp_of_information_seeking" in df.columns:
-        df["settlement_clean"] = df["camp_of_information_seeking"].map(clean_settlement)
-    # Enforce location labels after every load, including data returned from an
-    # older in-memory/persisted prepared cache. This prevents XML codes and
-    # legacy labels from resurfacing in filters without requiring a data reload.
-    if "location_raw" in df.columns:
-        location_source = df["location_raw"].where(
-            df["location_raw"].notna() & df["location_raw"].astype(str).str.strip().ne(""),
-            df.get("location_clean", pd.Series(MISSING, index=df.index)),
-        )
-    else:
-        location_source = df.get("location_clean", pd.Series(MISSING, index=df.index))
-    df["location_clean"] = location_source.map(clean_location)
-    if "cfs_raw" in df.columns:
-        cfs_source = df["cfs_raw"].where(
-            df["cfs_raw"].notna() & df["cfs_raw"].astype(str).str.strip().ne(""),
-            df.get("cfs_clean", pd.Series(MISSING, index=df.index)),
-        )
-    else:
-        cfs_source = df.get("cfs_clean", pd.Series(MISSING, index=df.index))
-    df["cfs_clean"] = cfs_source.map(clean_cfs)
 
 if df.empty:
     st.error("The dataset was loaded, but no analysable records remained after preparation.")
