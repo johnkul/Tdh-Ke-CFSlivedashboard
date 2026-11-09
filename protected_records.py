@@ -15,7 +15,7 @@ def child_register(data):
         result = pd.Series("", index=data.index, dtype=object)
         for name in names:
             if name in data:
-                values = data[name].fillna("").astype(str).str.strip()
+                values = data[name].astype("string").fillna("").str.strip()
                 valid = ~values.str.lower().isin(["", "nan", "none", "missing", "missing / unspecified", "not recorded"])
                 result = result.mask(result.eq("") & valid, values)
         return result.replace("", "Not recorded")
