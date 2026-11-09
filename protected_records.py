@@ -9,6 +9,26 @@ import streamlit as st
 PREFIX = "cfs_child_register_"
 
 
+def filter_register_visits(data, selection):
+    """Use the dashboard's cleaned first-visit response, never infer missing visits."""
+    if selection == "All visits":
+        return data
+    status = data.get("first_visit_clean", pd.Series(pd.NA, index=data.index, dtype="string"))
+    status = status.astype("string").fillna("")
+    if selection == "First visits":
+        mask = status.eq("Yes")
+    elif selection == "Repeat visits":
+        mask = status.eq("No")
+    else:
+        mask = ~status.isin(["Yes", "No"])
+    return data.loc[mask]
+
+
+def reset_visit_export():
+    st.session_state.pop(PREFIX + "export", None)
+    st.session_state.pop(PREFIX + "page", None)
+
+
 def child_register(data):
     """Project recorded values and apply the approved nationality/profile rule."""
     def field(*names):
@@ -111,16 +131,23 @@ def render_protected_records(data, setting):
                 st.error("Incorrect password. The register remains locked.")
             return
         st.button("Lock child register", on_click=lock_register, key=PREFIX + "lock")
-        st.caption(f"{len(data):,} filtered submission records. Repeated visits and retained revisions remain separate rows.")
+        source_data = data
+        visit_filter = st.radio(
+            "Visit type", ["All visits", "First visits", "Repeat visits", "Visit not recorded"],
+            horizontal=True, key=PREFIX + "visit_filter", on_change=reset_visit_export,
+        )
+        data = filter_register_visits(source_data, visit_filter)
+        st.caption(f"{visit_filter}: {len(data):,} of {len(source_data):,} dashboard-filtered submission records. This selection applies to both the table and Excel download.")
+        st.caption("First visits use first_visit_clean = Yes; repeat visits use No. Missing or unrecognized responses stay in All visits or Visit not recorded. Counts are submissions, not unique children.")
         st.caption("Profile follows the agreed reporting rule: Kenyan nationality = Host Community; other recorded nationalities = Refugee. Missing nationality = Not recorded.")
         prepared = st.session_state.get(PREFIX + "export")
         # A parent rerun/filter change supplies a new frame. Never reuse a file
         # prepared for a different frame; no PII is placed in a shared cache.
-        if prepared is not None and prepared["source"] is not data:
+        if prepared is not None and (prepared["source"] is not source_data or prepared.get("visit_filter") != visit_filter):
             st.session_state.pop(PREFIX + "export", None)
             prepared = None
         if st.button("Prepare protected Excel download", disabled=data.empty, key=PREFIX + "prepare"):
-            prepared = {"source": data, "bytes": register_excel(data)}
+            prepared = {"source": source_data, "visit_filter": visit_filter, "bytes": register_excel(data)}
             st.session_state[PREFIX + "export"] = prepared
         if prepared is not None:
             st.caption("Contains child-identifying information. The workbook itself is not password-encrypted.")
