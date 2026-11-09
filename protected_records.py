@@ -1,169 +1,208 @@
-"""Restricted, paginated child register. Never used by public exports."""
-import hmac
-import time
+"""Protected register and in-memory password-to-open Office exports.
+
+No source writes, temporary plaintext files, or shared export caches.
+"""
 from io import BytesIO
+from datetime import date, datetime
+import hashlib
+import re
 
 import pandas as pd
-import streamlit as st
-
-PREFIX = "cfs_child_register_"
 
 
-def filter_register_visits(data, selection):
-    """Use the dashboard's cleaned first-visit response, never infer missing visits."""
+REGISTER_COLUMNS = [
+    "Date of Interview/entry", "Child / Beneficiary Name", "Individual number", "Phone number",
+    "Specific location", "Gender", "Age group", "Nationality", "Disability",
+    "Type of Disability", "Profile status",
+    "Section/Block hosting the helpdesk.", "Village location hosting the helpdesk",
+]
+
+
+def filter_protected_visits(frame, selection):
+    """Select recorded visit history without changing records or imputing visits."""
     if selection == "All visits":
-        return data
-    status = data.get("first_visit_clean", pd.Series(pd.NA, index=data.index, dtype="string"))
-    status = status.astype("string").fillna("")
+        return frame
+    history = frame.get("helpdesk_visit_history", pd.Series(pd.NA, index=frame.index, dtype="string"))
+    history = history.astype("string").fillna("")
     if selection == "First visits":
-        mask = status.eq("Yes")
+        mask = history.eq("First-time visitor")
     elif selection == "Repeat visits":
-        mask = status.eq("No")
+        mask = history.eq("Repeat visitor")
+    elif selection == "Visit not recorded":
+        mask = ~history.isin(["First-time visitor", "Repeat visitor"])
     else:
-        mask = ~status.isin(["Yes", "No"])
-    return data.loc[mask]
+        raise ValueError("Unknown visit selection")
+    return frame.loc[mask]
 
 
-def reset_visit_export():
-    st.session_state.pop(PREFIX + "export", None)
-    st.session_state.pop(PREFIX + "page", None)
+def _text(value):
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.casefold() in {"nan", "none", "nat", "<na>", "[missing]", "[not recorded]"} else text
 
 
-def child_register(data):
-    """Project recorded values and apply the approved nationality/profile rule."""
-    def field(*names):
-        result = pd.Series("", index=data.index, dtype=object)
-        for name in names:
-            if name in data:
-                values = data[name].astype("string").fillna("").str.strip()
-                valid = ~values.str.lower().isin(["", "nan", "none", "missing", "missing / unspecified", "not recorded"])
-                result = result.mask(result.eq("") & valid, values)
-        return result.replace("", "Not recorded")
-
-    dates = pd.to_datetime(data.get("date", pd.Series(index=data.index, dtype=object)), errors="coerce")
-    table = pd.DataFrame(index=data.index)
-    table["Date"] = dates.dt.strftime("%d %b %Y").fillna("Not recorded")
-    table["Child's Name"] = field("child_name")
-    table["Individual Number"] = field("child_individual_number")
-    table["Location/Telephone Number"] = field("caregiver_parent_phone")
-    table["Gender"] = field("gender_clean", "child_gender")
-    table["Age"] = field("age_clean", "child_age")
-    table["Age group"] = field("age_group")
-    table["Nationality"] = field("nationality")
-    table["Disability (Yes/No)"] = field("disability_status_clean", "child_living_with_disability")
-    table["If Yes, which disability"] = field("disability_type_display", "disability_type")
-    table.loc[~table["Disability (Yes/No)"].str.casefold().eq("yes"), "If Yes, which disability"] = "—"
-    table["Location (specific)"] = field("location_clean", "specific_camp_location", "exact_registered_location")
-    nationality = table["Nationality"].str.strip().str.casefold()
-    profile = pd.Series("Refugee", index=data.index)
-    profile.loc[nationality.isin(["kenyan", "kenyans", "kenya"])] = "Host Community"
-    profile.loc[nationality.eq("not recorded")] = "Not recorded"
-    table["Profile (Refugee/Host Community)"] = profile
-    return table.reset_index(drop=True)
+def register_gender(value):
+    text = _text(value)
+    key = text.casefold()
+    if key in {"girl", "girls", "woman", "women", "female"}:
+        return "Female"
+    if key in {"boy", "boys", "man", "men", "male"}:
+        return "Male"
+    if key == "intersex":
+        return "Intersex"
+    # In particular, transgender is not a synonym for intersex.
+    return text or "Not recorded"
 
 
-def lock_register():
-    for key in ("until", "credential", "password", "error", "page", "export"):
-        st.session_state.pop(PREFIX + key, None)
+def register_disability(value):
+    """Short display labels only; leave source disability classifications intact."""
+    text = _text(value)
+    key = text.casefold()
+    if key in {"yes", "yes disability", "has disability"}:
+        return "Yes"
+    if key in {"no", "no disability"}:
+        return "No"
+    return text or "Not recorded"
 
 
-def register_excel(data):
-    """Export only the requested register fields; identifiers remain Excel text."""
+def register_profile(value):
+    text = _text(value)
+    key = text.casefold().replace("_", " ")
+    if key == "host" or key.startswith("host community"):
+        return "Host"
+    if key.startswith("refugee"):
+        return "Refugee"
+    return text or "Not recorded"
+
+
+def beneficiary_register(frame, age_mapper):
+    """All supplied filtered entries, not a deduplicated beneficiary roster."""
+    if frame.empty:
+        return pd.DataFrame(columns=REGISTER_COLUMNS)
+    source = frame.reset_index(drop=True)
+
+    def column(name):
+        return source.get(name, pd.Series(pd.NA, index=source.index))
+
+    def dates(name):
+        return (pd.to_datetime(column(name), errors="coerce", format="mixed", utc=True)
+                .dt.tz_convert("Africa/Nairobi").dt.tz_localize(None).dt.normalize())
+
+    result = pd.DataFrame(index=source.index)
+    result[REGISTER_COLUMNS[0]] = dates("interview_date").combine_first(dates("reporting_date"))
+    result[REGISTER_COLUMNS[1]] = column("information_seeker_name").map(_text).replace("", "Not recorded")
+    result[REGISTER_COLUMNS[2]] = column("information_seeker_individual_number").map(_text).replace("", "Not recorded")
+    primary_phone = column("information_seeker_phone").map(_text)
+    alternative_phone = column("alternative_phone").map(_text)
+    missing_phone_labels = {"not recorded", "not provided", "n/a", "na"}
+    primary_phone = primary_phone.mask(primary_phone.str.casefold().isin(missing_phone_labels), "")
+    alternative_phone = alternative_phone.mask(alternative_phone.str.casefold().isin(missing_phone_labels), "")
+    result["Phone number"] = primary_phone.mask(primary_phone.eq(""), alternative_phone).replace("", "Not recorded")
+    # Show recorded entries directly, without source-field prefixes.
+    section = column("helpdesk_section_block").map(_text)
+    village = column("helpdesk_village").map(_text)
+    residence = column("residence_neighborhood_compound_house").map(_text)
+    result["Section/Block hosting the helpdesk."] = section.replace("", "Not recorded")
+    result["Village location hosting the helpdesk"] = village.replace("", "Not recorded")
+    result["Specific location"] = [
+        "; ".join(dict.fromkeys(part for part in (block, place, home) if part)) or "Not recorded"
+        for block, place, home in zip(section, village, residence)
+    ]
+    result["Gender"] = column("information_seeker_gender").map(register_gender)
+    age = column("age_group").combine_first(column("information_seeker_age"))
+    result["Age group"] = age.map(age_mapper).map(_text).str.replace(r" years$", " Yrs", regex=True).replace("", "Not recorded")
+    nationality = column("information_seeker_nationality").map(_text)
+    other = column("information_seeker_nationality_other").map(_text)
+    use_other = nationality.str.casefold().isin(["", "other", "others", "other nationality", "other not listed", "not listed"])
+    result["Nationality"] = nationality.mask(use_other & other.ne(""), other).replace("", "Not recorded")
+    result["Disability"] = column("disability_status").map(register_disability)
+    result["Type of Disability"] = column("disability_type").map(_text).replace("", "Not recorded")
+    result["Profile status"] = column("household_type").map(register_profile)
+    return result[REGISTER_COLUMNS].sort_values(REGISTER_COLUMNS[0], ascending=False, na_position="last", kind="stable").reset_index(drop=True)
+
+
+def file_password_error(password):
+    """One policy shared by the UI and exporter, not the table-access password."""
+    if not isinstance(password, str) or len(password) < 6:
+        return "Use a file password with at least 6 characters."
+    if not (any(c.isupper() for c in password) and any(c.islower() for c in password)
+            and any(c.isdigit() for c in password)
+            and any(not c.isalnum() and not c.isspace() for c in password)):
+        return "Include an uppercase letter, a lowercase letter, a number and a symbol in the file password."
+    return None
+
+
+def encrypted_excel_bytes(table, password):
+    """Return only verified Office Agile encrypted XLSX bytes, or raise.
+
+    Sheet/workbook protection is not encryption. The OOXML file itself is
+    encrypted; a password is required before its data can be opened.
+    """
+    password_error = file_password_error(password)
+    if password_error:
+        raise ValueError(password_error)
+    if len(table) > 1_048_575 or len(table.columns) > 16_384:
+        raise ValueError("Selection exceeds Excel limits. Narrow the report filters.")
     from openpyxl import Workbook
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Filtered child register"
-    table = child_register(data)
-    sheet.append(list(table.columns))
-    for row_number, row in enumerate(table.itertuples(index=False, name=None), 2):
-        # Preserve leading zeros and treat user-entered formula-looking values
-        # as literal text, rather than spreadsheet formulas.
-        for column_number, value in enumerate(row, 1):
-            cell = sheet.cell(row_number, column_number, value)
-            cell.data_type = "s"
-    sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = sheet.dimensions
+    from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
-    for position, column in enumerate(table.columns, 1):
-        sheet.column_dimensions[get_column_letter(position)].width = min(42, max(18, len(column) + 2))
-    output = BytesIO()
-    workbook.save(output)
-    workbook.close()
-    return output.getvalue()
+    import msoffcrypto
+    from msoffcrypto.format.ooxml import OOXMLFile
 
+    workbook = Workbook()
+    workbook.properties.creator = "TDH Kenya"
+    sheet = workbook.active
+    sheet.title = "Protected records"
+    sheet.freeze_panes = "A2"
 
-def unlock_register(expected):
-    supplied = str(st.session_state.get(PREFIX + "password", ""))
-    st.session_state[PREFIX + "password"] = ""
-    if expected and hmac.compare_digest(supplied.encode(), expected.encode()):
-        st.session_state[PREFIX + "until"] = time.time() + 600
-        # Bind access to the configured credential without retaining plaintext.
-        import hashlib
-        st.session_state[PREFIX + "credential"] = hashlib.sha256(expected.encode()).hexdigest()
-        st.session_state[PREFIX + "error"] = False
-    else:
-        lock_register()
-        st.session_state[PREFIX + "error"] = True
-
-
-@st.fragment(run_every="30s")
-def render_protected_records(data, setting):
-    """Check authorization before constructing or transmitting identifying rows."""
-    import hashlib
-    password = str(setting("CFS_RECORDS_PASSWORD", "") or "").strip()
-    if password.upper().startswith("REPLACE_WITH"):
-        password = ""
-    until = st.session_state.get(PREFIX + "until", 0)
-    authorized = bool(password and until > time.time() and
-                      st.session_state.get(PREFIX + "credential") == hashlib.sha256(password.encode()).hexdigest())
-    if not authorized and until:
-        lock_register()
-    with st.expander("🔒 Protected child register", expanded=authorized):
-        st.caption("Follows the current date, location, CFS and staff filters. Telephone is the caregiver/parent telephone. Excel download includes all filtered register rows. Access lasts 10 minutes.")
-        if not password:
-            st.info("Configure CFS_RECORDS_PASSWORD in Streamlit Secrets to enable this register.")
-            return
-        if not authorized:
-            with st.form(PREFIX + "form"):
-                st.text_input("Child register password", type="password", key=PREFIX + "password")
-                st.form_submit_button("Unlock child register", on_click=unlock_register, args=(password,))
-            if st.session_state.get(PREFIX + "error"):
-                st.error("Incorrect password. The register remains locked.")
-            return
-        st.button("Lock child register", on_click=lock_register, key=PREFIX + "lock")
-        source_data = data
-        visit_filter = st.radio(
-            "Visit type", ["All visits", "First visits", "Repeat visits", "Visit not recorded"],
-            horizontal=True, key=PREFIX + "visit_filter", on_change=reset_visit_export,
-        )
-        data = filter_register_visits(source_data, visit_filter)
-        st.caption(f"{visit_filter}: {len(data):,} of {len(source_data):,} dashboard-filtered submission records. This selection applies to both the table and Excel download.")
-        st.caption("First visits use first_visit_clean = Yes; repeat visits use No. Missing or unrecognized responses stay in All visits or Visit not recorded. Counts are submissions, not unique children.")
-        st.caption("Profile follows the agreed reporting rule: Kenyan nationality = Host Community; other recorded nationalities = Refugee. Missing nationality = Not recorded.")
-        prepared = st.session_state.get(PREFIX + "export")
-        # A parent rerun/filter change supplies a new frame. Never reuse a file
-        # prepared for a different frame; no PII is placed in a shared cache.
-        if prepared is not None and (prepared["source"] is not source_data or prepared.get("visit_filter") != visit_filter):
-            st.session_state.pop(PREFIX + "export", None)
-            prepared = None
-        if st.button("Prepare protected Excel download", disabled=data.empty, key=PREFIX + "prepare"):
-            prepared = {"source": source_data, "visit_filter": visit_filter, "bytes": register_excel(data)}
-            st.session_state[PREFIX + "export"] = prepared
-        if prepared is not None:
-            st.caption("Contains child-identifying information. The workbook itself is not password-encrypted.")
-            st.download_button(
-                "Download protected register (.xlsx)", data=prepared["bytes"],
-                file_name="CFS_filtered_child_register.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=PREFIX + "download", on_click="ignore",
-            )
-        # Build only the visible page. st.table provides no CSV/download toolbar.
-        pages = max(1, (len(data) + 49) // 50)
-        if st.session_state.get(PREFIX + "page", 1) > pages:
-            st.session_state[PREFIX + "page"] = 1
-        page = st.number_input("Register page", min_value=1, max_value=pages, step=1, key=PREFIX + "page")
-        st.caption(f"Page {page} of {pages} · up to 50 rows per page")
-        if data.empty:
-            st.info("No records match the current filters.")
+    def write_cell(row, col, value):
+        cell = sheet.cell(row, col)
+        if value is None or pd.isna(value):
+            return cell
+        if isinstance(value, (datetime, date, pd.Timestamp)):
+            stamp = pd.Timestamp(value)
+            if stamp.tzinfo is not None:
+                stamp = stamp.tz_convert("Africa/Nairobi").tz_localize(None)
+            cell.value = stamp.to_pydatetime()
+            cell.number_format = "dd mmm yyyy"
+        elif isinstance(value, str):
+            if len(value) > 32767 or re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", value):
+                raise ValueError("A field cannot be represented safely in Excel.")
+            cell.value = value
+            cell.data_type = "s"  # Never execute source text beginning with =, +, -, @.
+            cell.number_format = "@"
         else:
-            st.table(child_register(data.iloc[(page - 1) * 50:page * 50]))
+            cell.value = value
+        cell.alignment = Alignment(vertical="top", wrap_text=True)
+        return cell
+
+    for col, name in enumerate(table.columns, 1):
+        cell = write_cell(1, col, str(name))
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="2F7D69")
+        sheet.column_dimensions[get_column_letter(col)].width = 30 if "name" in str(name).casefold() or "location" in str(name).casefold() else 23
+    sheet.row_dimensions[1].height = 32
+    for row, values in enumerate(table.itertuples(index=False, name=None), 2):
+        for col, value in enumerate(values, 1):
+            write_cell(row, col, value)
+    sheet.auto_filter.ref = sheet.dimensions
+    plain, encrypted, checked = BytesIO(), BytesIO(), BytesIO()
+    try:
+        workbook.save(plain)
+        plain.seek(0)
+        OOXMLFile(plain).encrypt(password, encrypted)
+        encrypted.seek(0)
+        verifier = msoffcrypto.OfficeFile(encrypted)
+        if not verifier.is_encrypted():
+            raise RuntimeError("Export encryption verification failed.")
+        verifier.load_key(password=password, verify_password=True)
+        verifier.decrypt(checked, verify_integrity=True)
+        if hashlib.sha256(checked.getvalue()).digest() != hashlib.sha256(plain.getvalue()).digest():
+            raise RuntimeError("Export integrity verification failed.")
+        return encrypted.getvalue()
+    finally:
+        workbook.close()
+        plain.close()
+        encrypted.close()
+        checked.close()
