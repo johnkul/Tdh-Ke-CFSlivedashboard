@@ -4568,5 +4568,9 @@ elif section == "Raw Data":
         )
 
 
+    from protected_records import render_protected_records
+    render_protected_records(filtered, setting)
+
+
 # Footer
 render_app_footer()
