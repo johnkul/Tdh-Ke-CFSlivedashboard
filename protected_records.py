@@ -54,6 +54,11 @@ def child_register(data):
     table["If Yes, which disability"] = field("disability_type_display", "disability_type")
     table.loc[~table["Disability (Yes/No)"].str.casefold().eq("yes"), "If Yes, which disability"] = "—"
     table["Location (specific)"] = field("location_clean", "specific_camp_location", "exact_registered_location")
+<<<<<<< Updated upstream
+=======
+    table["Dadaab — Section and Block residence of the information seeker"] = field("section_block_residence", "Section and Block residence of the information seeker")
+    table["Kalobeyei Settlement — Exact location according to proof of registration"] = field("exact_registered_location", "Exact location of the information seeker (according to proof of registration)")
+>>>>>>> Stashed changes
     nationality = table["Nationality"].str.strip().str.casefold()
     profile = pd.Series("Refugee", index=data.index)
     profile.loc[nationality.isin(["kenyan", "kenyans", "kenya"])] = "Host Community"
@@ -139,6 +144,10 @@ def render_protected_records(data, setting):
         data = filter_register_visits(source_data, visit_filter)
         st.caption(f"{visit_filter}: {len(data):,} of {len(source_data):,} dashboard-filtered submission records. This selection applies to both the table and Excel download.")
         st.caption("First visits use first_visit_clean = Yes; repeat visits use No. Missing or unrecognized responses stay in All visits or Visit not recorded. Counts are submissions, not unique children.")
+<<<<<<< Updated upstream
+=======
+        st.caption("Age preserves the recorded exact age or source age bracket. Dadaab uses the recorded Section and Block residence; Kalobeyei Settlement uses the recorded exact location according to proof of registration. Both columns are separate from the broader specific location; missing values are not inferred.")
+>>>>>>> Stashed changes
         st.caption("Profile follows the agreed reporting rule: Kenyan nationality = Host Community; other recorded nationalities = Refugee. Missing nationality = Not recorded.")
         prepared = st.session_state.get(PREFIX + "export")
         # A parent rerun/filter change supplies a new frame. Never reuse a file
