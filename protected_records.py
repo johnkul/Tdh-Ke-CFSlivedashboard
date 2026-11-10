@@ -1,6 +1,7 @@
 """Restricted, paginated child register. Never used by public exports."""
 import hmac
 import time
+import re
 from io import BytesIO
 
 import pandas as pd
@@ -47,13 +48,22 @@ def child_register(data):
     table["Individual Number"] = field("child_individual_number")
     table["Location/Telephone Number"] = field("caregiver_parent_phone")
     table["Gender"] = field("gender_clean", "child_gender")
-    table["Age"] = field("age_clean", "child_age")
+    # age_clean may be the first number extracted from a source age bracket.
+    # The protected register must use the original answer instead.
+    source_age = field("child_age", "Age of the child.", "age_group")
+    table["Age"] = source_age.map(lambda value: str(int(value.split(".", 1)[0])) if re.fullmatch(r"\d+(?:\.0+)?", value) else value)
     table["Age group"] = field("age_group")
+    source_is_bracket = source_age.str.contains(r"\d\s*[-–—]\s*\d|\d\s*\+|\b(?:above|below|under|over|less than|more than)\b", case=False, regex=True, na=False)
+    table.loc[source_is_bracket, "Age group"] = source_age.loc[source_is_bracket]
+    visit = data.get("first_visit_clean", pd.Series(pd.NA, index=data.index, dtype="string")).astype("string")
+    table["Visit type"] = visit.map({"Yes": "First visit", "No": "Repeat visit"}).fillna("Not recorded")
     table["Nationality"] = field("nationality")
     table["Disability (Yes/No)"] = field("disability_status_clean", "child_living_with_disability")
     table["If Yes, which disability"] = field("disability_type_display", "disability_type")
     table.loc[~table["Disability (Yes/No)"].str.casefold().eq("yes"), "If Yes, which disability"] = "—"
     table["Location (specific)"] = field("location_clean", "specific_camp_location", "exact_registered_location")
+    table["Section and Block residence of the information seeker"] = field("section_block_residence", "Section and Block residence of the information seeker")
+    table["Exact location of the information seeker (according to proof of registration)"] = field("exact_registered_location", "Exact location of the information seeker (according to proof of registration)")
     nationality = table["Nationality"].str.strip().str.casefold()
     profile = pd.Series("Refugee", index=data.index)
     profile.loc[nationality.isin(["kenyan", "kenyans", "kenya"])] = "Host Community"
@@ -139,6 +149,7 @@ def render_protected_records(data, setting):
         data = filter_register_visits(source_data, visit_filter)
         st.caption(f"{visit_filter}: {len(data):,} of {len(source_data):,} dashboard-filtered submission records. This selection applies to both the table and Excel download.")
         st.caption("First visits use first_visit_clean = Yes; repeat visits use No. Missing or unrecognized responses stay in All visits or Visit not recorded. Counts are submissions, not unique children.")
+        st.caption("Age preserves the recorded exact age or source age bracket. The two exact residence columns show recorded values separately from the broader specific location.")
         st.caption("Profile follows the agreed reporting rule: Kenyan nationality = Host Community; other recorded nationalities = Refugee. Missing nationality = Not recorded.")
         prepared = st.session_state.get(PREFIX + "export")
         # A parent rerun/filter change supplies a new frame. Never reuse a file
@@ -167,3 +178,4 @@ def render_protected_records(data, setting):
             st.info("No records match the current filters.")
         else:
             st.table(child_register(data.iloc[(page - 1) * 50:page * 50]))
+
