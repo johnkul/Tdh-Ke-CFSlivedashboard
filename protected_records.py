@@ -61,9 +61,29 @@ def child_register(data):
     table["Disability (Yes/No)"] = field("disability_status_clean", "child_living_with_disability")
     table["If Yes, which disability"] = field("disability_type_display", "disability_type")
     table.loc[~table["Disability (Yes/No)"].str.casefold().eq("yes"), "If Yes, which disability"] = "—"
+<<<<<<< Updated upstream
     table["Location (specific)"] = field("location_clean", "specific_camp_location", "exact_registered_location")
     table["Section and Block residence of the information seeker"] = field("section_block_residence", "Section and Block residence of the information seeker")
     table["Exact location of the information seeker (according to proof of registration)"] = field("exact_registered_location", "Exact location of the information seeker (according to proof of registration)")
+=======
+    table["Location (specific)"] = field("location_clean", "specific_camp_location", "camp_location_alt")
+    section = field("section_block_residence", "Section and Block residence of the information seeker")
+    registered = field("exact_registered_location", "Exact location of the information seeker (according to proof of registration)")
+    settlement = field("settlement_clean", "camp_of_information_seeking").str.casefold()
+    locations = []
+    for camp, block, proof in zip(settlement, section, registered):
+        present = [value for value in (block, proof) if value != "Not recorded"]
+        if "kalobeyei" in camp:
+            location = proof if proof != "Not recorded" else block
+        elif "dadaab" in camp:
+            location = block if block != "Not recorded" else proof
+        else:
+            # Unknown settlement: retain recorded detail without guessing its
+            # settlement or silently losing one of two different values.
+            location = "; ".join(dict.fromkeys(present)) or "Not recorded"
+        locations.append(location)
+    table["Beneficiary exact location"] = pd.Series(locations, index=data.index)
+>>>>>>> Stashed changes
     nationality = table["Nationality"].str.strip().str.casefold()
     profile = pd.Series("Refugee", index=data.index)
     profile.loc[nationality.isin(["kenyan", "kenyans", "kenya"])] = "Host Community"
@@ -149,7 +169,11 @@ def render_protected_records(data, setting):
         data = filter_register_visits(source_data, visit_filter)
         st.caption(f"{visit_filter}: {len(data):,} of {len(source_data):,} dashboard-filtered submission records. This selection applies to both the table and Excel download.")
         st.caption("First visits use first_visit_clean = Yes; repeat visits use No. Missing or unrecognized responses stay in All visits or Visit not recorded. Counts are submissions, not unique children.")
+<<<<<<< Updated upstream
         st.caption("Age preserves the recorded exact age or source age bracket. The two exact residence columns show recorded values separately from the broader specific location.")
+=======
+        st.caption("Location (specific) retains the camp location. Beneficiary exact location separately combines Dadaab section/block residence and Kalobeyei registration location. Missing residence details are not replaced by the camp name. Age preserves the recorded exact age or source age bracket.")
+>>>>>>> Stashed changes
         st.caption("Profile follows the agreed reporting rule: Kenyan nationality = Host Community; other recorded nationalities = Refugee. Missing nationality = Not recorded.")
         prepared = st.session_state.get(PREFIX + "export")
         # A parent rerun/filter change supplies a new frame. Never reuse a file
